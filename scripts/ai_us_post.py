@@ -23,7 +23,7 @@ def get_us_300_pool():
         df = pd.read_html(res.text)[0]
         return [s.replace('.', '-') for s in df['Symbol'].tolist()[:300]]
     except:
-        return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
+        return ["AAPL", "NVDA", "QQQ", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
 def safe_post(msg: str):
     if not WEBHOOK_URL:
