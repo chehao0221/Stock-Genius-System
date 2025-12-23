@@ -1,16 +1,50 @@
-🚀 Stock-Genius-System (旗艦級 AI 量化投資系統)這是一個全自動化的金融量化分析系統，專為**台股（TW）與美股（US）**設計。系統結合了 XGBoost 機器學習預測、技術指標工程與 Google News 即時情報雷達，能自動在盤後進行建模分析，並將高潛力標的推播至 Discord。💎 核心價值AI 預測引擎：不只看過去，更預測未來。每日掃描標普 300 與台股核心標的，預測未來 5 日回報率。技術指標深度分析：整合 RSI、Momentum、均線乖離率（Bias）等多維度指標。自動化對帳系統：具備「回頭看」功能，自動驗證 5 天前 AI 預測的準確度，確保模型不失真。情報雷達：自動過濾 12 小時內的重磅財經新聞，結合即時漲跌幅給予投資警示。📂 目錄結構詳解PlaintextStock-Genius-System/
-├── .github/workflows/
-│   └── quant_master.yml      # 自動化中樞：控制台美股與新聞的觸發時序
-├── data/
-│   ├── tw_history.csv        # 台股歷史預測紀錄與對帳庫
-│   └── us_history.csv        # 美股歷史預測紀錄與對帳庫
-├── scripts/
-│   ├── ai_tw_post.py         # 台股 AI 建模、分析與 Discord 推播腳本
-│   ├── ai_us_post.py         # 美股 AI 建模、分析與 Discord 推播腳本
-│   └── news_radar.py         # 全球財經新聞爬蟲與即時狀態監控
-├── requirements.txt          # 專案依賴環境
-└── README.md                 # 專案說明文件
-⚙️ 系統工作流程 (Workflow)1. 數據採集與特徵工程系統使用 yfinance 獲取數據，並計算以下特徵：Momentum (20d)：股價動能趨勢。RSI (14d)：市場超買/超賣狀態。Bias (20d)：與 20 日均線的乖離率。Support/Resistance：基於 60 日高低點計算的技術支撐與壓力位。2. AI 模型訓練使用 XGBoost Regressor 模型：目標：預測未來 5 日的累積回報率。防止過擬合：實作 soft clip 機制將預測限制在合理的 $\pm 15\%$ 區間。3. 自動化排程 (台北時間)時間任務名稱目的08:30🏹 台股盤前情報掃描最新新聞與美股昨夜對台股的影響14:00🇹🇼 台股盤後分析台股收盤後立即進行 AI 預測與模型訓練21:30⚡ 美股盤前情報美股開盤前過濾重要新聞與趨勢06:30🇺🇸 美股盤後分析美股收盤後（隔日清晨）進行 AI 建模與對帳🚀 快速部署手冊第一步：環境準備建議使用 Python 3.10 以上版本：Bashgit clone https://github.com/你的用戶名/Stock-Genius-System.git
-cd Stock-Genius-System
+🚀 核心功能與特色
+1. 台美雙市 AI 預測
+機器學習建模: 利用 XGBoost 迴歸模型，根據歷史技術指標預測未來 5 日收益。
+
+技術分析整合: 自動計算 RSI、均線乖離率、成交量比及 60 日支撐/壓力位。
+
+自動對帳: 系統會自動回測 5 日前的預測準確度，並在 Discord 報告中標註 ✅ 或 ❌。
+
+2. 全球新聞雷達 (News Radar)
+自動監控主要標的（如台積電、輝達、蘋果等）的最新市場消息。
+
+整合新聞標題與來源，幫助投資者快速掌握基本面變動。
+
+3. 高度自動化運維 (Quant Master)
+
+排程執行: 透過 quant_master.yml 定義執行邏輯 。
+
+
+台股/新聞任務: 每日台北時間 14:00 執行 。
+
+
+美股任務: 每日台北時間上午 10:00 (美股收盤後) 執行 。
+
+
+自動部署: 每次執行完畢會自動將最新的 CSV 紀錄 push 回儲存庫，實現數據持久化 。
+
+🛠️ 安裝與設定
+環境準備
+請確保安裝 requirements.txt 中的必要函式庫 ：
+
+Bash
+
 pip install -r requirements.txt
-第二步：設定 GitHub Secrets請前往你的 GitHub Repository ➡️ Settings ➡️ Secrets and variables ➡️ Actions 新增：DISCORD_WEBHOOK_URL: 接收 AI 分析報告（台美股預測）。NEWS_WEBHOOK_URL: 接收每日新聞雷達。註：兩者可設為同一個網址。第三步：開啟自動化寫入權限為了讓系統能自動更新 data/ 下的 CSV 對帳檔案：前往 Settings ➡️ Actions ➡️ General。將 Workflow permissions 改為 Read and write permissions。📊 報表範例呈現AI 預測報告📊 台股 AI 進階預測報告 (2025-12-23)🏆 AI 推薦 Top 5🥇 2330.TW: 預估 +2.45% (現價: 1045 | 支撐: 1010)🥈 2454.TW: 預估 +1.92% (現價: 1420 | 支撐: 1380)5 日對帳結算🎯 5 日預測結算對帳2317.TW: 預估 +1.50% ➜ 實際 +2.10% ✅NVDA: 預估 +3.00% ➜ 實際 -0.50% ❌🛡️ 免責聲明 (Disclaimer)本專案僅供程式開發與量化研究參考，不構成任何形式的投資建議。金融市場具有高度風險，模型之預測結果基於歷史數據模擬，不代表未來獲利保證。投資前請務必進行獨立思考與風險評估，開發者不對任何投資損失負責。
+主要依賴：yfinance, pandas, xgboost, scikit-learn, requests 等。
+
+GitHub Secrets 配置
+請在 GitHub Repo 設定中加入以下 Secret 以啟用推播功能：
+
+
+DISCORD_WEBHOOK_URL: 用於接收 AI 報告的 Discord Webhook 網址 。
+
+📊 報表示例 (Discord)
+📊 台股 AI 預測報告 ⭐ 2330.TW 預期回報：+1.85% (現價: 1040 | 支撐: 1015)
+
+🎯 對帳結果 2454.TW: 預估 +1.5% ➜ 實際 +2.1% ✅
+
+📰 新聞雷達 NVDA: 輝達發布最新架構晶片，市場反應熱烈...
+
+⚠️ 免責聲明
+本系統之所有分析結果僅供學術研究與程式開發參考，不構成投資建議。所有金融投資均有風險，AI 預測不保證未來獲利，使用者應審慎評估並自負風險。
