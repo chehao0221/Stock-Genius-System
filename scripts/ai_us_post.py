@@ -9,7 +9,9 @@ import warnings
 
 warnings.filterwarnings("ignore")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-HISTORY_FILE = "us_history.csv"
+
+# --- 修正路徑：指向 data 資料夾 ---
+HISTORY_FILE = "data/us_history.csv"
 
 def get_us_300_pool():
     try:
