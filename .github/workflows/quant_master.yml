@@ -28,15 +28,16 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
+          # 取得目前的小時 (UTC)
           HOUR=$(date +%H)
           if [ "$HOUR" == "00" ]; then
-            python scripts/news_system.py
+            python scripts/news_radar.py
           elif [ "$HOUR" == "06" ]; then
-            python scripts/run_tw.py
+            python scripts/ai_tw_post.py
           elif [ "$HOUR" == "13" ]; then
-            python scripts/news_system.py
+            python scripts/news_radar.py
           elif [ "$HOUR" == "22" ]; then
-            python scripts/run_us.py
+            python scripts/ai_us_post.py
           fi
 
       - name: Sync History Data
