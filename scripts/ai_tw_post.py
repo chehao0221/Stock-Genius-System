@@ -9,8 +9,6 @@ import warnings
 
 warnings.filterwarnings("ignore")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-
-# --- 核心修正：路徑必須包含 data/ ---
 HISTORY_FILE = "data/tw_history.csv" 
 
 def get_tw_300_pool():
@@ -38,23 +36,32 @@ def compute_features(df):
 def audit_and_save(current_results, top_5_keys):
     audit_msg = ""
     if os.path.exists(HISTORY_FILE):
-        hist_df = pd.read_csv(HISTORY_FILE)
-        hist_df['date'] = pd.to_datetime(hist_df['date'])
-        deadline = datetime.now() - timedelta(days=7)
-        to_settle = hist_df[(hist_df['date'] <= deadline) & (hist_df['settled'] == False)]
-        if not to_settle.empty:
-            audit_msg = "\n🎯 **5日預估結算對帳單**\n"
-            for idx, row in to_settle.iterrows():
-                try:
-                    curr_p = yf.Ticker(row['symbol']).history(period="1d")['Close'].iloc[-1]
-                    actual_ret = (curr_p - row['pred_p']) / row['pred_p']
-                    is_hit = "✅ 命中" if (actual_ret > 0 and row['pred_ret'] > 0) or (actual_ret < 0 and row['pred_ret'] < 0) else "❌ 錯誤"
-                    audit_msg += f"`{row['symbol']}`: 預估 `{row['pred_ret']:+.2%}` ➔ 實際 `{actual_ret:+.2%}` ({is_hit})\n"
-                    hist_df.at[idx, 'settled'] = True
-                except: continue
-        hist_df.to_csv(HISTORY_FILE, index=False)
+        try:
+            hist_df = pd.read_csv(HISTORY_FILE)
+            # 關鍵修正：解決日期格式不一報錯
+            hist_df['date'] = pd.to_datetime(hist_df['date'], format='mixed')
+            
+            deadline = datetime.now() - timedelta(days=7)
+            if 'settled' not in hist_df.columns: hist_df['settled'] = False
+            
+            to_settle = hist_df[(hist_df['date'] <= deadline) & (hist_df['settled'] == False)]
+            if not to_settle.empty:
+                audit_msg = "\n🎯 **5日預估結算對帳單**\n"
+                for idx, row in to_settle.iterrows():
+                    try:
+                        ticker_data = yf.Ticker(row['symbol']).history(period="1d")
+                        if ticker_data.empty: continue
+                        curr_p = ticker_data['Close'].iloc[-1]
+                        actual_ret = (curr_p - row['pred_p']) / row['pred_p']
+                        is_hit = "✅ 命中" if (actual_ret > 0 and row['pred_ret'] > 0) or (actual_ret < 0 and row['pred_ret'] < 0) else "❌ 錯誤"
+                        audit_msg += f"`{row['symbol']}`: 預估 `{row['pred_ret']:+.2%}` ➔ 實際 `{actual_ret:+.2%}` ({is_hit})\n"
+                        hist_df.at[idx, 'settled'] = True
+                    except: continue
+            hist_df.to_csv(HISTORY_FILE, index=False)
+        except: hist_df = pd.DataFrame(columns=['date', 'symbol', 'pred_p', 'pred_ret', 'settled'])
     else:
         hist_df = pd.DataFrame(columns=['date', 'symbol', 'pred_p', 'pred_ret', 'settled'])
+
     new_recs = [{'date': datetime.now().strftime("%Y-%m-%d"), 'symbol': s, 'pred_p': current_results[s]['c'], 'pred_ret': current_results[s]['p'], 'settled': False} for s in top_5_keys]
     hist_df = pd.concat([hist_df, pd.DataFrame(new_recs)], ignore_index=True)
     hist_df.to_csv(HISTORY_FILE, index=False)
@@ -71,6 +78,7 @@ def run():
     for s in all_syms:
         try:
             df = data.xs(s, axis=1, level=1).dropna()
+            if len(df) < 60: continue
             df = compute_features(df)
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
             train = df.dropna()
@@ -79,6 +87,7 @@ def run():
             pred = model.predict(df[feats].iloc[-1:])[0]
             results[s] = {"p": pred, "c": df["Close"].iloc[-1], "s": df["sup"].iloc[-1], "r": df["res"].iloc[-1]}
         except: continue
+    
     top_5 = sorted([s for s in results if s not in must_watch], key=lambda x: results[x]['p'], reverse=True)[:5]
     audit_report = audit_and_save(results, top_5)
     
@@ -91,12 +100,14 @@ def run():
         i = results[s]
         msg += f"{ranks[idx]} **{s}**: `預估 {i['p']:+.2%}`\n"
         msg += f"└ 現價: `{i['c']:.1f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+    
     msg += "\n💎 **指定監控標的未來預估**\n"
     for s in must_watch:
         if s in results:
             i = results[s]
             msg += f"⭐ **{s}**: `預估 {i['p']:+.2%}`\n"
             msg += f"└ 現價: `{i['c']:.1f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+    
     msg += audit_report + "\n💡 *註：預估值為 AI 對未來 5 個交易日後的走勢判斷。*"
     requests.post(WEBHOOK_URL, json={"content": msg})
 
