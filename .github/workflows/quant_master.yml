@@ -44,7 +44,6 @@ jobs:
         run: |
           git config --global user.name "Quant-Bot"
           git config --global user.email "bot@github.com"
-          # 確保將 data/ 內的 csv 變動推回 GitHub
           git add data/*.csv || true
           git commit -m "Update Market History [skip ci]" || true
           git push || true
