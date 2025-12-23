@@ -6,16 +6,18 @@ on:
     - cron: '00 06 * * 1-5' # 台北 14:00 -> 執行【台股 AI 分析】
     - cron: '30 13 * * 1-5' # 台北 21:30 -> 執行【美股盤前情報】
     - cron: '30 22 * * 1-5' # 台北 06:30 -> 執行【美股 AI 分析】
-  workflow_dispatch: 
+  workflow_dispatch: # 支援手動點擊執行
 
 jobs:
   quant_tasks:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 必須要有寫入權限才能儲存 CSV
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -28,22 +30,37 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
-          # 取得目前的小時 (UTC)
           HOUR=$(date +%H)
-          if [ "$HOUR" == "00" ]; then
+          EVENT_NAME="${{ github.event_name }}"
+
+          # 如果是手動執行，預設跑全部腳本進行測試
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            echo "Detected Manual Trigger: Running all scripts..."
             python scripts/news_radar.py
-          elif [ "$HOUR" == "06" ]; then
             python scripts/ai_tw_post.py
-          elif [ "$HOUR" == "13" ]; then
-            python scripts/news_radar.py
-          elif [ "$HOUR" == "22" ]; then
             python scripts/ai_us_post.py
+          else
+            # 根據定時觸發的小時判斷執行哪一個腳本
+            if [ "$HOUR" == "00" ] || [ "$HOUR" == "13" ]; then
+              python scripts/news_radar.py
+            elif [ "$HOUR" == "06" ]; then
+              python scripts/ai_tw_post.py
+            elif [ "$HOUR" == "22" ]; then
+              python scripts/ai_us_post.py
+            else
+              echo "No task defined for UTC hour $HOUR"
+            fi
           fi
 
-      - name: Sync History Data
+      - name: Commit and Push changes
         run: |
-          git config --global user.name "Quant-Bot"
-          git config --global user.email "bot@github.com"
-          git add data/*.csv || true
-          git commit -m "Update Market History [skip ci]" || true
-          git push || true
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          # 確保只在有變更時才執行 commit，避免噴錯
+          git add data/*.csv
+          if git diff --staged --quiet; then
+            echo "No changes in CSV files to commit."
+          else
+            git commit -m "Update stock history data [skip ci]"
+            git push
+          fi
