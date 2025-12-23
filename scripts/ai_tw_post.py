@@ -10,7 +10,7 @@ import warnings
 warnings.filterwarnings("ignore")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
-# --- 修正路徑：指向 data 資料夾 ---
+# --- 核心修正：路徑必須包含 data/ ---
 HISTORY_FILE = "data/tw_history.csv" 
 
 def get_tw_300_pool():
