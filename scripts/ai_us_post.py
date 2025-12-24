@@ -11,8 +11,12 @@ import warnings
 # 基本設定 (美股)
 # =========================
 warnings.filterwarnings("ignore")
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE_US = os.path.join(BASE_DIR, "us_history.csv")
+# 修正路徑：從 scripts/ 往上一層找到 data/
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+HISTORY_FILE_US = os.path.join(DATA_DIR, "us_history.csv")
+
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # =========================
@@ -32,7 +36,6 @@ def get_us_pool():
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         res = requests.get(url, headers=headers, timeout=10)
         df = pd.read_html(res.text)[0]
-        # yfinance 標點符號處理 (如 BRK.B -> BRK-B)
         return [s.replace('.', '-') for s in df['Symbol'].tolist()[:300]]
     except: return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
@@ -95,7 +98,6 @@ def run_us():
             results[s] = {"p": pred, "c": float(df["Close"].iloc[-1]), "sup": sup, "res": res}
         except: continue
 
-    # 組合訊息 (排版比照圖二)
     msg = f"🇺🇸 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
     msg += "------------------------------------------\n\n"
     msg += "🏆 **AI 海選 Top 5 (美股潛力股)**\n"
@@ -114,7 +116,6 @@ def run_us():
             r = results[s]
             msg += f"**{s}**: 預估 `{r['p']:+.2%}`\n └ 現價: `{r['c']:.2f}`\n"
 
-    # 加上回測報告
     msg += get_us_settle_report()
     msg += "\n💡 AI 預測僅供參考，美股波動大請注意風險。"
 
@@ -122,7 +123,6 @@ def run_us():
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
     else: print(msg)
 
-    # 存檔供未來結算
     new_hist = [{"date": datetime.now().date(), "symbol": s, "pred_p": results[s]['c'], "pred_ret": results[s]['p'], "settled": "False"} for s in (top_5 + mag_7) if s in results]
     pd.DataFrame(new_hist).to_csv(HISTORY_FILE_US, mode='a', header=not os.path.exists(HISTORY_FILE_US), index=False)
 
