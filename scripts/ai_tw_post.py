@@ -1,6 +1,5 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import requests
 import os
 from xgboost import XGBRegressor
@@ -15,20 +14,20 @@ warnings.filterwarnings("ignore")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
 
+HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # =========================
-# 工具
+# 工具函數
 # =========================
 def calc_pivot(df):
-    recent = df.iloc[-20:]
-    h, l, c = recent['High'].max(), recent['Low'].min(), recent['Close'].iloc[-1]
+    r = df.iloc[-20:]
+    h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
     return round(2*p - h, 1), round(2*p - l, 1)
 
-def get_tw_pool():
+def get_tw_300():
     try:
         import requests
         url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
@@ -39,28 +38,33 @@ def get_tw_pool():
         codes = codes[codes.str.len() == 4].head(300)
         return [f"{c}.TW" for c in codes]
     except:
-        return ["2330.TW", "2317.TW", "2454.TW"]
+        return ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2382.TW"]
 
 # =========================
-# 回測結算（實盤安全）
+# 5 日回測（實盤安全）
 # =========================
-def settle_report():
+def get_settle_report():
     if not os.path.exists(HISTORY_FILE):
-        return ""
+        return "\n📊 **5 日回測**：尚無可結算資料\n"
 
     df = pd.read_csv(HISTORY_FILE)
     unsettled = df[df["settled"] == False]
-    if unsettled.empty:
-        return "\n📊 **5 日回測**：尚無可結算資料"
 
-    report = "\n🏁 **台股 5 日回測結算**\n"
+    if unsettled.empty:
+        return "\n📊 **5 日回測**：尚無可結算資料\n"
+
+    report = "\n🏁 **5 日回測結算報告**\n"
     for idx, row in unsettled.iterrows():
         try:
-            df_price = yf.download(row["symbol"], period="7d", auto_adjust=True, progress=False)
-            exit_p = df_price["Close"].iloc[-1]
-            ret = (exit_p - row["entry_price"]) / row["entry_price"]
+            price_df = yf.download(row["symbol"], period="7d", auto_adjust=True, progress=False)
+            exit_price = price_df["Close"].iloc[-1]
+            ret = (exit_price - row["entry_price"]) / row["entry_price"]
             win = (ret > 0 and row["pred_ret"] > 0) or (ret < 0 and row["pred_ret"] < 0)
-            report += f"• `{row['symbol']}` 預估 {row['pred_ret']:+.2%} | 實際 `{ret:+.2%}` {'✅' if win else '❌'}\n"
+
+            report += (
+                f"• `{row['symbol']}` 預估 {row['pred_ret']:+.2%} | "
+                f"實際 `{ret:+.2%}` {'✅' if win else '❌'}\n"
+            )
             df.at[idx, "settled"] = True
         except:
             continue
@@ -72,8 +76,8 @@ def settle_report():
 # 主程式
 # =========================
 def run():
-    fixed = ["2330.TW", "2317.TW", "2454.TW"]
-    watch = list(dict.fromkeys(fixed + get_tw_pool()))
+    fixed = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
+    watch = list(dict.fromkeys(fixed + get_tw_300()))
 
     data = yf.download(watch, period="2y", auto_adjust=True, group_by="ticker", progress=False)
 
@@ -83,7 +87,7 @@ def run():
     for s in watch:
         try:
             df = data[s].dropna()
-            if len(df) < 120:
+            if len(df) < 150:
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
@@ -105,42 +109,54 @@ def run():
 
             results[s] = {
                 "pred": pred,
-                "price": float(df["Close"].iloc[-1]),
+                "price": round(df["Close"].iloc[-1], 2),
                 "sup": sup,
                 "res": res
             }
         except:
             continue
 
-    horses = {k:v for k,v in results.items() if k not in fixed and v["pred"] > 0}
-    top5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
+    # =========================
+    # 組合訊息
+    # =========================
+    msg = f"📊 **台股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
+    msg += "------------------------------------------\n\n"
 
-    msg = f"📊 **台股 AI 實盤預測 ({datetime.now():%Y-%m-%d})**\n\n🏆 **Top 5 黑馬**\n"
-    for s in top5:
+    medals = ["🥇", "🥈", "🥉", "📈", "📈"]
+    horses = {k: v for k, v in results.items() if k not in fixed and v["pred"] > 0}
+    top_5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
+
+    msg += "🏆 **AI 海選 Top 5 (潛力黑馬)**\n"
+    for i, s in enumerate(top_5):
         r = results[s]
-        msg += f"• **{s}** `{r['pred']:+.2%}` | 價 `{r['price']}` (Pivot `{r['sup']}/{r['res']}`)\n"
+        msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
+        msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
 
-    msg += "\n🔍 **權值股**\n"
+    msg += "\n🔍 **指定權值股監控 (固定顯示)**\n"
     for s in fixed:
         if s in results:
             r = results[s]
-            msg += f"• {s} `{r['pred']:+.2%}`\n"
+            msg += f"{s}: 預估 `{r['pred']:+.2%}`\n"
+            msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
 
-    msg += settle_report()
-    msg += "\n💡 僅供研究參考，實盤請自行控管風險"
+    msg += get_settle_report()
+    msg += "\n💡 AI 為機率模型，僅供研究參考"
 
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": msg[:1900]})
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
     else:
         print(msg)
 
+    # =========================
+    # 儲存回測資料
+    # =========================
     hist = [{
         "date": datetime.now().date(),
         "symbol": s,
         "entry_price": results[s]["price"],
         "pred_ret": results[s]["pred"],
         "settled": False
-    } for s in top5 + fixed if s in results]
+    } for s in (top_5 + fixed) if s in results]
 
     pd.DataFrame(hist).to_csv(
         HISTORY_FILE,
