@@ -11,8 +11,12 @@ import warnings
 # 基本設定
 # =========================
 warnings.filterwarnings("ignore")
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE_TW = os.path.join(BASE_DIR, "tw_history.csv")
+# 修正路徑：從 scripts/ 往上一層找到 data/
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+HISTORY_FILE_TW = os.path.join(DATA_DIR, "tw_history.csv")
+
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # =========================
