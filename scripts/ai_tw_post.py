@@ -1,19 +1,27 @@
+import os
+import sys
 import yfinance as yf
 import pandas as pd
 import requests
-import os
 from xgboost import XGBRegressor
 from datetime import datetime
 import warnings
 
-warnings.filterwarnings("ignore")
-
-# =========================
-# 基本設定
-# =========================
+# ===============================
+# Project Base / Data Directory
+# ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# 確保可以 import 專案內模組（若有）
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+# ===============================
+# Basic Settings
+# ===============================
+warnings.filterwarnings("ignore")
 
 HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
@@ -25,11 +33,11 @@ def calc_pivot(df):
     r = df.iloc[-20:]
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
-    return round(2*p - h, 1), round(2*p - l, 1)
+    return round(2 * p - h, 1), round(2 * p - l, 1)
+
 
 def get_tw_300():
     try:
-        import requests
         url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
         df = pd.read_html(requests.get(url, timeout=10).text)[0]
         df.columns = df.iloc[0]
@@ -37,7 +45,7 @@ def get_tw_300():
         codes = df["有價證券代號及名稱"].str.split("　").str[0]
         codes = codes[codes.str.len() == 4].head(300)
         return [f"{c}.TW" for c in codes]
-    except:
+    except Exception:
         return ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2382.TW"]
 
 # =========================
@@ -54,9 +62,15 @@ def get_settle_report():
         return "\n📊 **5 日回測**：尚無可結算資料\n"
 
     report = "\n🏁 **5 日回測結算報告**\n"
+
     for idx, row in unsettled.iterrows():
         try:
-            price_df = yf.download(row["symbol"], period="7d", auto_adjust=True, progress=False)
+            price_df = yf.download(
+                row["symbol"],
+                period="7d",
+                auto_adjust=True,
+                progress=False,
+            )
             exit_price = price_df["Close"].iloc[-1]
             ret = (exit_price - row["entry_price"]) / row["entry_price"]
             win = (ret > 0 and row["pred_ret"] > 0) or (ret < 0 and row["pred_ret"] < 0)
@@ -66,7 +80,7 @@ def get_settle_report():
                 f"實際 `{ret:+.2%}` {'✅' if win else '❌'}\n"
             )
             df.at[idx, "settled"] = True
-        except:
+        except Exception:
             continue
 
     df.to_csv(HISTORY_FILE, index=False)
@@ -79,7 +93,13 @@ def run():
     fixed = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
     watch = list(dict.fromkeys(fixed + get_tw_300()))
 
-    data = yf.download(watch, period="2y", auto_adjust=True, group_by="ticker", progress=False)
+    data = yf.download(
+        watch,
+        period="2y",
+        auto_adjust=True,
+        group_by="ticker",
+        progress=False,
+    )
 
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
@@ -91,7 +111,9 @@ def run():
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
+            df["bias"] = (
+                df["Close"] - df["Close"].rolling(20).mean()
+            ) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
 
@@ -100,7 +122,7 @@ def run():
                 n_estimators=120,
                 max_depth=3,
                 learning_rate=0.05,
-                random_state=42
+                random_state=42,
             )
             model.fit(train[feats], train["target"])
 
@@ -111,9 +133,9 @@ def run():
                 "pred": pred,
                 "price": round(df["Close"].iloc[-1], 2),
                 "sup": sup,
-                "res": res
+                "res": res,
             }
-        except:
+        except Exception:
             continue
 
     # =========================
@@ -150,20 +172,25 @@ def run():
     # =========================
     # 儲存回測資料
     # =========================
-    hist = [{
-        "date": datetime.now().date(),
-        "symbol": s,
-        "entry_price": results[s]["price"],
-        "pred_ret": results[s]["pred"],
-        "settled": False
-    } for s in (top_5 + fixed) if s in results]
+    hist = [
+        {
+            "date": datetime.now().date(),
+            "symbol": s,
+            "entry_price": results[s]["price"],
+            "pred_ret": results[s]["pred"],
+            "settled": False,
+        }
+        for s in (top_5 + fixed)
+        if s in results
+    ]
 
     pd.DataFrame(hist).to_csv(
         HISTORY_FILE,
         mode="a",
         header=not os.path.exists(HISTORY_FILE),
-        index=False
+        index=False,
     )
+
 
 if __name__ == "__main__":
     run()
