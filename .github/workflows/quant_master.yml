@@ -2,10 +2,13 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    - cron: '30 00 * * 1-5' # 台北 08:30 (新聞)
-    - cron: '00 06 * * 1-5' # 台北 14:00 (台股 AI)
-    - cron: '30 13 * * 1-5' # 台北 21:30 (新聞)
-    - cron: '30 22 * * 1-5' # 台北 06:30 (美股 AI)
+    # 1. 台股開盤前 30 分 (台北 08:30) -> UTC 00:30
+    - cron: '30 00 * * 1-5'
+    
+    # 2. 美股開盤前 30 分 (台北 21:00) -> UTC 13:00
+    # 註：若冬令時間開盤為 22:30，可視需求改為 '00 14' (台北 22:00)
+    - cron: '00 13 * * 1-5'
+    
   workflow_dispatch: 
 
 jobs:
@@ -30,16 +33,22 @@ jobs:
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
           HOUR=$(date +%H)
+          
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # 手動執行：全部跑一遍
             python scripts/news_radar.py
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            if [ "$HOUR" == "00" ] || [ "$HOUR" == "13" ]; then
+            # 依據時間自動判斷執行對象
+            if [ "$HOUR" == "00" ]; then
+              # --- 台北 08:30：台股盤前 ---
               python scripts/news_radar.py
-            elif [ "$HOUR" == "06" ]; then
               python scripts/ai_tw_post.py
-            elif [ "$HOUR" == "22" ]; then
+              
+            elif [ "$HOUR" == "13" ]; then
+              # --- 台北 21:00：美股盤前 ---
+              python scripts/news_radar.py
               python scripts/ai_us_post.py
             fi
           fi
