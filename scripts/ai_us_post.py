@@ -21,26 +21,22 @@ def get_us_300_pool():
         res = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", headers=headers, timeout=10)
         df = pd.read_html(res.text)[0]
         return [s.replace('.', '-') for s in df['Symbol'].tolist()[:300]]
-    except:
-        return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
+    except: return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
 def get_market_context():
     try:
         idx = yf.download("^GSPC", period="1y", auto_adjust=True, progress=False)
         if idx.empty: return True, 0, 0, None
         idx["ma60"] = idx["Close"].rolling(60).mean()
-        curr_p = float(idx["Close"].iloc[-1])
-        ma60_p = float(idx["ma60"].iloc[-1])
+        curr_p, ma60_p = float(idx["Close"].iloc[-1]), float(idx["ma60"].iloc[-1])
         return (curr_p > ma60_p), curr_p, ma60_p, idx
-    except:
-        return True, 0, 0, None
+    except: return True, 0, 0, None
 
 def compute_features(df, market_df=None):
     df = df.copy()
     df["mom20"] = df["Close"].pct_change(20)
     delta = df["Close"].diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    gain, loss = delta.clip(lower=0).rolling(14).mean(), (-delta.clip(upper=0)).rolling(14).mean()
     df["rsi"] = 100 - (100 / (1 + gain / (loss + 1e-9)))
     df["ma20"] = df["Close"].rolling(20).mean()
     df["bias"] = (df["Close"] - df["ma20"]) / (df["ma20"] + 1e-9)
@@ -49,8 +45,7 @@ def compute_features(df, market_df=None):
     df["atr"] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
     if market_df is not None:
         df["rs_index"] = df["Close"].pct_change(20) - market_df["Close"].pct_change(20).reindex(df.index)
-    else:
-        df["rs_index"] = 0
+    else: df["rs_index"] = 0
     df["avg_amount"] = (df["Close"] * df["Volume"]).rolling(5).mean()
     return df
 
@@ -58,8 +53,7 @@ def audit_and_save(results, top_keys):
     if os.path.exists(HISTORY_FILE):
         hist = pd.read_csv(HISTORY_FILE)
         hist["date"] = pd.to_datetime(hist["date"]).dt.date
-    else:
-        hist = pd.DataFrame(columns=["date", "symbol", "pred_p", "pred_ret", "settled"])
+    else: hist = pd.DataFrame(columns=["date", "symbol", "pred_p", "pred_ret", "settled"])
     today = datetime.now().date()
     new_rows = [{"date": today, "symbol": s, "pred_p": results[s]["c"], "pred_ret": results[s]["p"], "settled": False} for s in top_keys]
     hist = pd.concat([hist, pd.DataFrame(new_rows)], ignore_index=True).drop_duplicates(subset=["date", "symbol"], keep="last")
@@ -73,7 +67,6 @@ def run():
     all_data = yf.download(watch, period="5y", group_by="ticker", auto_adjust=True, progress=False)
     feats = ["mom20", "rsi", "bias", "vol_ratio", "rs_index"]
     results = {}
-    MIN_AMOUNT = 10_000_000 
 
     for s in watch:
         try:
@@ -81,23 +74,21 @@ def run():
             if len(df) < 150: continue
             df = compute_features(df, market_df=mkt_df)
             last = df.iloc[-1]
-            if last["avg_amount"] < MIN_AMOUNT: continue
+            if last["avg_amount"] < 10_000_000 and s not in must_watch: continue
 
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
             train = df.dropna().iloc[-500:]
-            if len(train) < 100: continue
-
             model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.03, subsample=0.8, colsample_bytree=0.8, random_state=42)
             model.fit(train[feats], train["target"])
             pred = float(np.clip(model.predict(train[feats].iloc[-1:])[0], -0.15, 0.15))
             
-            # --- 最優化風控區塊 ---
+            raw_pred = pred
             if not is_bull: pred *= 0.7 
             if last["atr"] > (df["atr"].mean() * 1.5): pred *= 0.8
             if last["Close"] < last["ma20"]: pred *= 0.8
-            if pred < 0.006: pred = 0 
+            final_pred = pred if pred >= 0.006 else 0
 
-            results[s] = {"p": pred, "c": float(last["Close"]), "rs": float(last["rs_index"])}
+            results[s] = {"p": final_pred, "raw_p": raw_pred, "c": float(last["Close"]), "rs": float(last["rs_index"])}
         except: continue
 
     horses = {k: v for k, v in results.items() if k not in must_watch}
@@ -108,13 +99,22 @@ def run():
     msg = f"🇺🇸 **美股 AI 進階預報 ({datetime.now():%m/%d})**\n"
     msg += f"{'📈 多頭環境' if is_bull else '⚠️ 空頭環境 (弱勢保護)'} | 指數: {mkt_p:.1f}\n"
     msg += "----------------------------------\n"
-    if not final_keys: msg += "💡 訊號等待中... 目前建議觀望。\n"
+    
+    msg += "🏆 **AI 推薦強勢區**\n"
+    if not final_keys: msg += "💡 暫無高信心標的。\n"
     else:
         for i, s in enumerate(final_keys):
             r = results[s]
             msg += f"{['🥇','🥈','🥉','📈','📈'][i]} **{s}** 預估 `{r['p']:+.2%}` | RS:{'強' if r['rs']>0 else '弱'}\n"
+
+    msg += "\n🔍 **指定/權值監測 (不限漲跌)**\n"
+    for s in must_watch:
+        if s in results:
+            r = results[s]
+            emoji = "📈" if r['raw_p'] > 0 else "📉"
+            msg += f"{emoji} `{s:7}` 預估 `{r['raw_p']:+.2%}` (現價: {r['c']:.1f})\n"
+    
     if WEBHOOK_URL: requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
     else: print(msg)
 
-if __name__ == "__main__":
-    run()
+if __name__ == "__main__": run()
