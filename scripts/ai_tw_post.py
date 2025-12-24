@@ -26,15 +26,14 @@ def get_tw_300_pool():
         stocks = df[df["code"].str.len() == 4]["code"].tolist()
         return [f"{s}.TW" for s in stocks[:300]]
     except:
-        return ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2382.TW", "0050.TW"]
+        return ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
 
 def get_market_context():
     try:
         idx = yf.download("^TWII", period="1y", auto_adjust=True, progress=False)
         if idx.empty: return True, 0, 0, None
         idx["ma60"] = idx["Close"].rolling(60).mean()
-        curr_p = float(idx["Close"].iloc[-1])
-        ma60_p = float(idx["ma60"].iloc[-1])
+        curr_p, ma60_p = float(idx["Close"].iloc[-1]), float(idx["ma60"].iloc[-1])
         return (curr_p > ma60_p), curr_p, ma60_p, idx
     except:
         return True, 0, 0, None
@@ -68,8 +67,10 @@ def audit_and_save(results, top_keys):
 
 def run():
     is_bull, mkt_p, mkt_ma, mkt_df = get_market_context()
+    # 指定標的清單
     must_watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW"]
     watch = list(set(must_watch + get_tw_300_pool()))
+    
     print(f"🚀 台股 AI 分析啟動... (大盤:{'多頭' if is_bull else '空頭'})")
     all_data = yf.download(watch, period="5y", group_by="ticker", auto_adjust=True, progress=False)
     feats = ["mom20", "rsi", "bias", "vol_ratio", "rs_index"]
@@ -89,40 +90,39 @@ def run():
             model.fit(train[feats], train["target"])
             pred = float(np.clip(model.predict(train[feats].iloc[-1:])[0], -0.15, 0.15))
             
-            # 原始預測值保留給指定標的
-            raw_pred = pred
+            raw_p = pred # 保存原始預測
             if not is_bull: pred *= 0.7 
             if last["atr"] > (df["atr"].mean() * 1.5): pred *= 0.8
             if last["Close"] < last["ma20"]: pred *= 0.8
-            # 推薦標的才執行 0.6% 門檻
-            final_pred = pred if pred >= 0.006 else 0
+            final_p = pred if pred >= 0.006 else 0 # 推薦門檻
 
-            results[s] = {"p": final_pred, "raw_p": raw_pred, "c": float(last["Close"]), "rs": float(last["rs_index"])}
+            results[s] = {"p": final_p, "raw": raw_p, "c": float(last["Close"]), "rs": float(last["rs_index"])}
         except: continue
 
-    # 推薦區邏輯
     horses = {k: v for k, v in results.items() if k not in must_watch}
     top_keys = sorted(horses, key=lambda x: horses[x]['p'], reverse=True)[:5]
     final_keys = [k for k in top_keys if horses[k]["p"] > 0]
     audit_and_save(results, final_keys)
     
+    # --- 訊息組裝 ---
     msg = f"🇹🇼 **台股 AI 進階預報 ({datetime.now():%m/%d})**\n"
     msg += f"{'📈 多頭環境' if is_bull else '⚠️ 空頭環境 (弱勢保護)'} | 指數: {mkt_p:.0f}\n"
     msg += "----------------------------------\n"
     
     msg += "🏆 **AI 推薦強勢區**\n"
-    if not final_keys: msg += "💡 暫無高信心標的。\n"
+    if not final_keys:
+        msg += "💡 暫無高信心標的。\n"
     else:
         for i, s in enumerate(final_keys):
             r = results[s]
             msg += f"{['🥇','🥈','🥉','📈','📈'][i]} **{s}** 預估 `{r['p']:+.2%}` | RS:{'強' if r['rs']>0 else '弱'}\n"
 
-    msg += "\n🔍 **指定/權值監測 (不限漲跌)**\n"
+    msg += "\n🔍 **指定/權值監測 (強制顯示)**\n"
     for s in must_watch:
         if s in results:
             r = results[s]
-            emoji = "📈" if r['raw_p'] > 0 else "📉"
-            msg += f"{emoji} `{s:7}` 預估 `{r['raw_p']:+.2%}` (現價: {r['c']:.1f})\n"
+            emoji = "📈" if r['raw'] > 0 else "📉"
+            msg += f"{emoji} `{s:7}` 預估 `{r['raw']:+.2%}` (現價: {r['c']:.1f})\n"
     
     if WEBHOOK_URL: requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
     else: print(msg)
