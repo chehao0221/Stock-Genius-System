@@ -25,12 +25,12 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 # =========================
 def run_news():
     print("📰 [US] 執行消息面分析")
-    # 👉 放你的美股新聞 / 消息面
-    # 例如：Fed、新創、財報、情緒分析、Discord
+    # ✅ 假日也會跑
+    # TODO：放你的美股新聞、Fed、財報、情緒分析、Discord 推播
 
 
 # =========================
-# 📈 股市工具
+# 📈 股市工具函數
 # =========================
 def calc_pivot(df):
     r = df.iloc[-20:]
@@ -63,7 +63,12 @@ def get_settle_report():
 
     for idx, row in unsettled.iterrows():
         try:
-            price_df = yf.download(row["symbol"], period="7d", auto_adjust=True, progress=False)
+            price_df = yf.download(
+                row["symbol"],
+                period="7d",
+                auto_adjust=True,
+                progress=False,
+            )
             exit_price = price_df["Close"].iloc[-1]
             ret = (exit_price - row["entry_price"]) / row["entry_price"]
             win = (ret > 0 and row["pred_ret"] > 0) or (ret < 0 and row["pred_ret"] < 0)
@@ -89,7 +94,13 @@ def run_market():
     mag_7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
     watch = list(dict.fromkeys(mag_7 + get_sp500()))
 
-    data = yf.download(watch, period="2y", auto_adjust=True, group_by="ticker", progress=False)
+    data = yf.download(
+        watch,
+        period="2y",
+        auto_adjust=True,
+        group_by="ticker",
+        progress=False,
+    )
 
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
@@ -101,7 +112,9 @@ def run_market():
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
+            df["bias"] = (
+                df["Close"] - df["Close"].rolling(20).mean()
+            ) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
 
@@ -126,7 +139,29 @@ def run_market():
         except Exception:
             continue
 
-    msg = f"📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
+    # =========================
+    # 組合訊息
+    # =========================
+    msg = f"📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
+    msg += "------------------------------------------\n\n"
+
+    medals = ["🥇", "🥈", "🥉", "📈", "📈"]
+    horses = {k: v for k, v in results.items() if k not in mag_7 and v["pred"] > 0}
+    top_5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
+
+    msg += "🏆 **AI 海選 Top 5 (潛力股)**\n"
+    for i, s in enumerate(top_5):
+        r = results[s]
+        msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
+        msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+
+    msg += "\n💎 **Magnificent 7 監控 (固定顯示)**\n"
+    for s in mag_7:
+        if s in results:
+            r = results[s]
+            msg += f"{s}: 預估 `{r['pred']:+.2%}`\n"
+            msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+
     msg += get_settle_report()
     msg += "\n💡 AI 為機率模型，僅供研究參考"
 
@@ -134,6 +169,28 @@ def run_market():
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
     else:
         print(msg)
+
+    # =========================
+    # 儲存回測資料（只在交易日）
+    # =========================
+    hist = [
+        {
+            "date": datetime.now().date(),
+            "symbol": s,
+            "entry_price": results[s]["price"],
+            "pred_ret": results[s]["pred"],
+            "settled": False,
+        }
+        for s in (top_5 + mag_7)
+        if s in results
+    ]
+
+    pd.DataFrame(hist).to_csv(
+        HISTORY_FILE,
+        mode="a",
+        header=not os.path.exists(HISTORY_FILE),
+        index=False,
+    )
 
 
 # =========================
