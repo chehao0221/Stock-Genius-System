@@ -4,7 +4,7 @@ import numpy as np
 import requests
 import os
 from xgboost import XGBRegressor
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 
 # =========================
@@ -22,24 +22,25 @@ def get_tw_300_pool():
         df = pd.read_html(res.text)[0]
         df.columns = df.iloc[0]
         df = df.iloc[1:]
-        df['code'] = df['有價證券代號及名稱'].str.split('　').str[0]
-        stocks = df[df['code'].str.len() == 4]['code'].tolist()
+        df["code"] = df["有價證券代號及名稱"].str.split("　").str[0]
+        stocks = df[df["code"].str.len() == 4]["code"].tolist()
         return [f"{s}.TW" for s in stocks[:300]]
     except:
-        return ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2382.TW"]
+        return ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2382.TW", "0050.TW"]
 
-def safe_post(msg: str):
-    if not WEBHOOK_URL:
-        print("\n--- Discord 訊息預覽 ---\n", msg)
-        return
+def get_market_context():
     try:
-        requests.post(WEBHOOK_URL, json={"content": msg}, timeout=15)
+        idx = yf.download("^TWII", period="1y", auto_adjust=True, progress=False)
+        if idx.empty: return True, 0, 0, None
+        idx["ma60"] = idx["Close"].rolling(60).mean()
+        curr_p = float(idx["Close"].iloc[-1])
+        ma60_p = float(idx["ma60"].iloc[-1])
+        return (curr_p > ma60_p), curr_p, ma60_p, idx
     except:
-        pass
+        return True, 0, 0, None
 
-def compute_features(df):
+def compute_features(df, market_df=None):
     df = df.copy()
-    df["r"] = df["Close"].pct_change()
     df["mom20"] = df["Close"].pct_change(20)
     delta = df["Close"].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
@@ -48,8 +49,16 @@ def compute_features(df):
     df["ma20"] = df["Close"].rolling(20).mean()
     df["bias"] = (df["Close"] - df["ma20"]) / (df["ma20"] + 1e-9)
     df["vol_ratio"] = df["Volume"] / (df["Volume"].rolling(20).mean() + 1e-9)
-    df["sup"] = df["Low"].rolling(60).min()
-    df["res"] = df["High"].rolling(60).max()
+    
+    hl, hc, lc = df["High"]-df["Low"], (df["High"]-df["Close"].shift()).abs(), (df["Low"]-df["Close"].shift()).abs()
+    df["atr"] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+    
+    if market_df is not None:
+        df["rs_index"] = df["Close"].pct_change(20) - market_df["Close"].pct_change(20).reindex(df.index)
+    else:
+        df["rs_index"] = 0
+    
+    df["avg_amount"] = (df["Close"] * df["Volume"]).rolling(5).mean()
     return df
 
 def audit_and_save(results, top_keys):
@@ -59,73 +68,66 @@ def audit_and_save(results, top_keys):
     else:
         hist = pd.DataFrame(columns=["date", "symbol", "pred_p", "pred_ret", "settled"])
     
-    audit_msg = ""
     today = datetime.now().date()
-    deadline = today - timedelta(days=8)
-    unsettled = hist[(hist["settled"] == False) & (hist["date"] <= deadline)]
-    
-    if not unsettled.empty:
-        audit_msg = "\n🎯 **5 日預測結算對帳 (TW)**\n"
-        for idx, r in unsettled.iterrows():
-            try:
-                p_df = yf.Ticker(r["symbol"]).history(period="5d")
-                if p_df.empty: continue
-                curr_p = p_df["Close"].iloc[-1]
-                act_ret = (curr_p - r["pred_p"]) / r["pred_p"]
-                hit = "✅" if np.sign(act_ret) == np.sign(r["pred_ret"]) else "❌"
-                audit_msg += f"`{r['symbol']}` {r['pred_ret']:+.2%} ➜ {act_ret:+.2%} {hit}\n"
-                hist.at[idx, "settled"] = True
-            except: continue
-    
     new_rows = [{"date": today, "symbol": s, "pred_p": results[s]["c"], "pred_ret": results[s]["p"], "settled": False} for s in top_keys]
     hist = pd.concat([hist, pd.DataFrame(new_rows)], ignore_index=True).drop_duplicates(subset=["date", "symbol"], keep="last")
     hist.to_csv(HISTORY_FILE, index=False)
-    return audit_msg
 
 def run():
-    must_watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
-    pool = get_tw_300_pool()
-    watch = list(set(must_watch + pool))
-    feats = ["mom20", "rsi", "bias", "vol_ratio"]
+    is_bull, mkt_p, mkt_ma, mkt_df = get_market_context()
+    must_watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW"]
+    watch = list(set(must_watch + get_tw_300_pool()))
+    
+    print(f"🚀 台股 AI 分析啟動... (大盤:{'多頭' if is_bull else '空頭'})")
+    all_data = yf.download(watch, period="5y", group_by="ticker", auto_adjust=True, progress=False)
+    
+    feats = ["mom20", "rsi", "bias", "vol_ratio", "rs_index"]
     results = {}
-
-    print(f"正在掃描 {len(watch)} 檔台股...")
-    all_data = yf.download(watch, period="5y", progress=False, group_by="ticker", auto_adjust=True)
+    MIN_AMOUNT = 100_000_000
 
     for s in watch:
         try:
             df = all_data[s].dropna()
-            if len(df) < 120: continue
-            df = compute_features(df)
+            if len(df) < 150: continue
+            df = compute_features(df, market_df=mkt_df)
+            last = df.iloc[-1]
+            if last["avg_amount"] < MIN_AMOUNT: continue
+
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
-            train = df.dropna()
-            model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05, random_state=42)
+            train = df.dropna().iloc[-500:] # GPT 建議：只用近 2 年資料
+            if len(train) < 100: continue
+
+            # GPT 建議：加強版 XGBoost 參數
+            model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.03, 
+                                 subsample=0.8, colsample_bytree=0.8, random_state=42)
             model.fit(train[feats], train["target"])
+            
             pred = float(np.clip(model.predict(train[feats].iloc[-1:])[0], -0.15, 0.15))
-            last = train.iloc[-1]
-            results[s] = {"p": pred, "c": float(last["Close"]), "s": float(last["sup"]), "r": float(last["res"])}
+            
+            if not is_bull: pred *= 0.5
+            if last["atr"] > (df["atr"].mean() * 1.5): pred *= 0.8 # 風控：高波動降權
+            if pred < 0.01: pred = 0 # GPT 建議：噪音過濾
+
+            results[s] = {"p": pred, "c": float(last["Close"]), "rs": float(last["rs_index"])}
         except: continue
 
-    # 邏輯：從海選中排除 must_watch 以選出純黑馬
-    potential_horses = {k: v for k, v in results.items() if k not in must_watch}
-    top_5_keys = sorted(potential_horses.keys(), key=lambda x: potential_horses[x]['p'], reverse=True)[:5]
-    audit_report = audit_and_save(results, top_5_keys)
+    horses = {k: v for k, v in results.items() if k not in must_watch}
+    top_keys = sorted(horses, key=lambda x: horses[x]['p'], reverse=True)[:5]
+    final_keys = [k for k in top_keys if horses[k]["p"] > 0]
 
-    msg = f"📊 **台股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n----------------------------------\n"
-    msg += "🏆 **AI 海選 Top 5 (潛力黑馬)**\n"
-    ranks = ["🥇", "🥈", "🥉", "📈", "📈"]
-    for idx, s in enumerate(top_5_keys):
-        i = results[s]
-        msg += f"{ranks[idx]} **{s}**: `預估 {i['p']:+.2%}`\n└ 現價: `{i['c']:.1f}` (支撐: `{i['s']:.1f}` / 壓力: `{i['r']:.1f}`)\n"
-
-    msg += "\n🔍 **指定權值股監控 (固定顯示)**\n"
-    for s in must_watch:
-        if s in results:
-            i = results[s]
-            msg += f"**{s}**: `預估 {i['p']:+.2%}`\n└ 現價: `{i['c']:.1f}`\n"
-
-    msg += audit_report + "\n💡 *AI 為機率模型，僅供研究參考*"
-    safe_post(msg[:1900])
+    audit_and_save(results, final_keys)
+    
+    msg = f"🇹🇼 **台股 AI 進階預報 ({datetime.now():%m/%d})**\n"
+    msg += f"{'📈 多頭環境' if is_bull else '⚠️ 空頭警示 (預測已降權)'} | 指數: {mkt_p:.0f}\n"
+    msg += "----------------------------------\n"
+    if not final_keys: msg += "💡 市場訊號不足，建議觀望。\n"
+    else:
+        for i, s in enumerate(final_keys):
+            r = results[s]
+            msg += f"{['🥇','🥈','🥉','📈','📈'][i]} **{s}** 預估 `{r['p']:+.2%}` | RS:{'強' if r['rs']>0 else '弱'}\n"
+    
+    if WEBHOOK_URL: requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
+    else: print(msg)
 
 if __name__ == "__main__":
     run()
