@@ -37,7 +37,6 @@ def get_tw_300_pool():
 # =========================
 def get_market_context():
     try:
-        # 縮短歷史回測期至 1 年，反映近況
         idx = yf.download("^TWII", period="1y", auto_adjust=True, progress=False)
         if idx.empty:
             return True, 0, 0, None
@@ -53,25 +52,21 @@ def get_market_context():
 # =========================
 def compute_features(df, market_df=None):
     df = df.copy()
-    # 趨勢動量
     df["mom20"] = df["Close"].pct_change(20)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     df["rsi"] = 100 - (100 / (1 + gain / (loss + 1e-9)))
 
-    # 乖離與量能
     df["ma20"] = df["Close"].rolling(20).mean()
     df["bias"] = (df["Close"] - df["ma20"]) / (df["ma20"] + 1e-9)
     df["vol_ratio"] = df["Volume"] / (df["Volume"].rolling(20).mean() + 1e-9)
 
-    # 波動指標 (ATR)
     hl = df["High"] - df["Low"]
     hc = (df["High"] - df["Close"].shift()).abs()
     lc = (df["Low"] - df["Close"].shift()).abs()
     df["atr"] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
 
-    # 相對強度指標 (對比大盤)
     if market_df is not None:
         mkt_ret = market_df["Close"].pct_change(20)
         df["rs_index"] = df["Close"].pct_change(20) - mkt_ret.reindex(df.index).fillna(0)
@@ -115,45 +110,39 @@ def audit_and_save(results, top_keys):
 def run():
     is_bull, mkt_p, mkt_ma, mkt_df = get_market_context()
 
-    # 股票池設定
     must_watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW"]
     pool_stocks = get_tw_300_pool()
     watch = list(dict.fromkeys(must_watch + pool_stocks))
 
-    print(f"🚀 台股 AI 分析啟動 | 市場趨勢：{'多頭' if is_bull else '空頭'}")
+    print(f"🚀 台股 AI 分析啟動 | 環境：{'多頭' if is_bull else '震盪/防守'}")
 
-    all_data = yf.download(watch, period="5y", group_by="ticker", auto_adjust=True, progress=False)
+    all_data = yf.download(watch, period="2y", group_by="ticker", auto_adjust=True, progress=False)
 
     feats = ["mom20", "rsi", "bias", "vol_ratio", "rs_index"]
     results = {}
     
-    # --- 放寬後的標準 ---
-    # 1. 成交額門檻：0.5億 (維持適度門檻確保流動性)
-    MIN_AMOUNT = 50_000_000 if is_bull else 80_000_000 
-    
-    # 2. 預期報酬門檻：調降至 0.3% (0.003)
-    PRED_THRESHOLD = 0.003 
+    # --- 積極型參數設定 ---
+    MIN_AMOUNT = 50_000_000 if is_bull else 80_000_000 # 多頭時放寬至 5000 萬
+    PRED_THRESHOLD = 0.003 # 降至 0.3%
 
     for s in watch:
         try:
             if s not in all_data or all_data[s].empty: continue
 
             df = all_data[s].dropna()
-            if len(df) < 150: continue
+            if len(df) < 60: continue # 降低最低 K 線需求
 
             df = compute_features(df, market_df=mkt_df)
             last = df.iloc[-1]
 
-            # 基本過濾：成交量
             if last["avg_amount"] < MIN_AMOUNT: continue
 
-            # 訓練資料與目標
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
-            train = df.dropna().iloc[-500:] # 最近兩年數據
+            # 專注於最近一年的數據 (約 250 個交易日)
+            train = df.dropna().iloc[-250:] 
             
-            if len(train) < 100: continue
+            if len(train) < 60: continue
 
-            # 優化後的模型參數
             model = XGBRegressor(
                 n_estimators=300,
                 max_depth=3,
@@ -164,19 +153,15 @@ def run():
             )
             model.fit(train[feats], train["target"])
 
-            # 進行預測
             raw_pred = model.predict(df[feats].iloc[-1:])[0]
             pred = float(np.clip(raw_pred, -0.15, 0.15))
 
-            # --- 放寬後的降權邏輯 ---
             if not is_bull:
-                pred *= 0.6  # 空頭環境降權幅度縮小 (原 0.5)
+                pred *= 0.6 # 增加空頭環境權重 (原 0.5)
             
-            # ATR 懲罰放寬 (波動大時的容忍度增加)
-            if last["atr"] > df["atr"].mean() * 1.8:
+            if last["atr"] > df["atr"].mean() * 1.8: # 放寬波動限制 (原 1.5)
                 pred *= 0.9 
 
-            # 門檻檢查
             if pred < PRED_THRESHOLD:
                 pred = 0
 
@@ -188,30 +173,29 @@ def run():
         except:
             continue
 
-    # 排序與選取
     horses = {k: v for k, v in results.items() if k not in must_watch}
     top_keys = sorted(horses, key=lambda x: horses[x]["p"], reverse=True)[:5]
     final_keys = [k for k in top_keys if horses[k]["p"] > 0]
 
     audit_and_save(results, final_keys)
 
-    # 訊息組合
     msg = f"🇹🇼 **台股 AI 進階分析 ({datetime.now():%m/%d})**\n"
-    msg += f"{'📈 多頭環境' if is_bull else '⚠️ 空頭警示'} | 指數: {mkt_p:.0f} | 門檻: {MIN_AMOUNT/100000000:.2f}億\n"
+    msg += f"{'📈 多頭環境' if is_bull else '⚠️ 震盪防守'} | 指數: {mkt_p:.0f} | 門檻: {MIN_AMOUNT/100000000:.2f}億\n"
     msg += "----------------------------------\n"
 
     if not final_keys:
-        msg += "💡 市場預期報酬低於 0.3%，建議持續觀望。\n"
+        msg += "💡 市場當前預期報酬較平淡，建議關注權值股表現。\n"
     else:
         for i, s in enumerate(final_keys):
             r = results[s]
-            status = "🔥" if r['rs'] > 0 else "📈"
-            msg += f"{['🥇','🥈','🥉','🎯','🎯'][i]} **{s}** 預估 `{r['p']:+.2%}` | RS:{status}\n"
+            # 調整 RS 的表現呈現方式
+            rs_label = "🔥強勢" if r['rs'] > 0.01 else "📈穩健"
+            msg += f"{['🥇','🥈','🥉','🎯','🎯'][i]} **{s}** 預估 `{r['p']:+.2%}` | {rs_label}\n"
 
-    msg += "\n🔍 **指標股監測**\n"
+    msg += "\n🔍 **權值監測**\n"
     for s in must_watch:
         if s in results:
-            msg += f"`{s}` 預期 `{results[s]['p']:+.2%}`\n"
+            msg += f"`{s}` 預估 `{results[s]['p']:+.2%}`\n"
 
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
