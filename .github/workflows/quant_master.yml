@@ -2,10 +2,13 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 台股盤後分析 (台北 15:30) -> UTC 07:30
+    # 1. 每一小時執行一次新聞雷達 (UTC 0-23 的 00 分)
+    - cron: '0 * * * *'
+    
+    # 2. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30
     - cron: '30 07 * * 1-5'
     
-    # 2. 美股盤後分析 (台北 06:00) -> UTC 22:00
+    # 3. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00
     - cron: '00 22 * * 1-5'
     
   workflow_dispatch: 
@@ -26,29 +29,27 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      # 💡 注意：GitHub Actions 環境的系統時間是 UTC
       - name: Execute Task
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
           HOUR=$(date +%H)
+          MINUTE=$(date +%M)
           
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # 手動執行：全部跑一遍
+          # 無論何時，只要是整點就跑新聞雷達 (或者手動執行時也跑)
+          if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             python scripts/news_radar.py
+          fi
+
+          # AI 預測邏輯 (依據特定小時執行)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            # 依據 UTC 時間自動判斷執行對象
-            if [ "$HOUR" == "07" ]; then
-              # --- 台北 15:30：台股盤後分析 ---
-              python scripts/news_radar.py
+            if [ "$HOUR" == "07" ] && [ "$MINUTE" == "30" ]; then
               python scripts/ai_tw_post.py
-              
-            elif [ "$HOUR" == "22" ]; then
-              # --- 台北 06:00：美股盤後分析 ---
-              python scripts/news_radar.py
+            elif [ "$HOUR" == "22" ] && [ "$MINUTE" == "00" ]; then
               python scripts/ai_us_post.py
             fi
           fi
@@ -58,6 +59,5 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/*.csv
-          # 加上 || true 確保即使沒有檔案更動也不會報錯導致流程失敗
           git commit -m "Update history data [skip ci]" || true
           git push
