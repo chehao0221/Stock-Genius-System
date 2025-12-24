@@ -2,12 +2,11 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 台股開盤前 30 分 (台北 08:30) -> UTC 00:30
-    - cron: '30 00 * * 1-5'
+    # 1. 台股盤後分析 (台北 15:30) -> UTC 07:30
+    - cron: '30 07 * * 1-5'
     
-    # 2. 美股開盤前 30 分 (台北 21:00) -> UTC 13:00
-    # 註：若冬令時間開盤為 22:30，可視需求改為 '00 14' (台北 22:00)
-    - cron: '00 13 * * 1-5'
+    # 2. 美股盤後分析 (台北 06:00) -> UTC 22:00
+    - cron: '00 22 * * 1-5'
     
   workflow_dispatch: 
 
@@ -27,6 +26,7 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
+      # 💡 注意：GitHub Actions 環境的系統時間是 UTC
       - name: Execute Task
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -40,14 +40,14 @@ jobs:
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            # 依據時間自動判斷執行對象
-            if [ "$HOUR" == "00" ]; then
-              # --- 台北 08:30：台股盤前 ---
+            # 依據 UTC 時間自動判斷執行對象
+            if [ "$HOUR" == "07" ]; then
+              # --- 台北 15:30：台股盤後分析 ---
               python scripts/news_radar.py
               python scripts/ai_tw_post.py
               
-            elif [ "$HOUR" == "13" ]; then
-              # --- 台北 21:00：美股盤前 ---
+            elif [ "$HOUR" == "22" ]; then
+              # --- 台北 06:00：美股盤後分析 ---
               python scripts/news_radar.py
               python scripts/ai_us_post.py
             fi
@@ -58,5 +58,6 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add data/*.csv
-          git commit -m "Update history data [skip ci]" || exit 0
+          # 加上 || true 確保即使沒有檔案更動也不會報錯導致流程失敗
+          git commit -m "Update history data [skip ci]" || true
           git push
