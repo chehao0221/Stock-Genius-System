@@ -2,62 +2,84 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 每一小時執行一次新聞雷達 (UTC 0-23 的 00 分)
+    # 1. 每一小時執行一次新聞雷達 (UTC 00 分)
     - cron: '0 * * * *'
-    
+
     # 2. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30
     - cron: '30 07 * * 1-5'
-    
+
     # 3. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00
     - cron: '00 22 * * 1-5'
-    
-  workflow_dispatch: 
+
+  workflow_dispatch:
 
 jobs:
   quant_tasks:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Execute Task
+      - name: Execute tasks
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
+          set -e
+
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
-          
-          # 無論何時，只要是整點就跑新聞雷達 (或者手動執行時也跑)
-          if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+
+          echo "Current UTC Time: $HOUR:$MINUTE"
+          echo "Trigger: ${{ github.event_name }}"
+
+          # 1. 新聞雷達（整點或手動）
+          if [ "$MINUTE" = "00" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "▶ Running News Radar"
             python scripts/news_radar.py
           fi
 
-          # AI 預測邏輯 (依據特定小時執行)
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          # 2. AI 分析邏輯
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "▶ Manual trigger: Run ALL AI tasks"
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            if [ "$HOUR" == "07" ] && [ "$MINUTE" == "30" ]; then
+            if [ "$HOUR" = "07" ] && [ "$MINUTE" = "30" ]; then
+              echo "▶ Scheduled: Taiwan AI"
               python scripts/ai_tw_post.py
-            elif [ "$HOUR" == "22" ] && [ "$MINUTE" == "00" ]; then
+            elif [ "$HOUR" = "22" ] && [ "$MINUTE" = "00" ]; then
+              echo "▶ Scheduled: US AI"
               python scripts/ai_us_post.py
             fi
           fi
 
-      - name: Commit and Push
+      - name: Commit and push results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add data/*.csv
-          git commit -m "Update history data [skip ci]" || true
-          git push
+
+          git pull origin main --rebase
+
+          git add data/
+
+          if git diff --staged --quiet; then
+            echo "No data changes detected"
+          else
+            git commit -m "Update data & news cache [skip ci]"
+            git push
+          fi
