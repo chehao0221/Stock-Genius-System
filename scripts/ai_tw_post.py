@@ -4,141 +4,160 @@ import numpy as np
 import requests
 import os
 from xgboost import XGBRegressor
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 
+# =========================
+# 基本設定
+# =========================
 warnings.filterwarnings("ignore")
-# 確保從 GitHub Secrets 讀取 Webhook URL
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+HISTORY_FILE = os.path.join(BASE_DIR, "tw_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-HISTORY_FILE = "tw_history.csv"
+
+# --- 你可以自定義這裡的指定股票 ---
+MUST_WATCH = ["2330.TW", "2317.TW", "2454.TW", "0050.TW"] 
 
 def get_tw_300_pool():
     try:
         url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
-        # 爬取證交所股票清單
-        df = pd.read_html(requests.get(url).text)[0]
+        res = requests.get(url, timeout=10)
+        df = pd.read_html(res.text)[0]
         df.columns = df.iloc[0]
         df = df.iloc[1:]
-        symbols = [row['有價證券代號及名稱'].split('\u3000')[0] + ".TW" 
-                   for _, row in df.iterrows() if str(row['CFICode']).startswith('ES')]
-        return symbols[:300]
-    except: 
-        return ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
+        df["code"] = df["有價證券代號及名稱"].str.split("　").str[0]
+        stocks = df[df["code"].str.len() == 4]["code"].tolist()
+        return [f"{s}.TW" for s in stocks[:300]]
+    except:
+        return ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2382.TW", "0050.TW"]
 
-def compute_features(df):
+def get_market_context():
+    try:
+        idx = yf.download("^TWII", period="1y", auto_adjust=True, progress=False)
+        if idx.empty: return True, 0, 0, None
+        idx["ma60"] = idx["Close"].rolling(60).mean()
+        curr_p = float(idx["Close"].iloc[-1])
+        ma60_p = float(idx["ma60"].iloc[-1])
+        return (curr_p > ma60_p), curr_p, ma60_p, idx
+    except:
+        return True, 0, 0, None
+
+def compute_features(df, market_df=None):
     df = df.copy()
     df["mom20"] = df["Close"].pct_change(20)
-    df["rsi"] = 100 - (100 / (1 + df["Close"].diff().clip(lower=0).rolling(14).mean() / ((-df["Close"].diff().clip(upper=0)).rolling(14).mean() + 1e-9)))
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    df["rsi"] = 100 - (100 / (1 + gain / (loss + 1e-9)))
     df["ma20"] = df["Close"].rolling(20).mean()
     df["bias"] = (df["Close"] - df["ma20"]) / (df["ma20"] + 1e-9)
     df["vol_ratio"] = df["Volume"] / (df["Volume"].rolling(20).mean() + 1e-9)
-    df["sup"] = df["Low"].rolling(60).min()
-    df["res"] = df["High"].rolling(60).max()
+    
+    hl, hc, lc = df["High"]-df["Low"], (df["High"]-df["Close"].shift()).abs(), (df["Low"]-df["Close"].shift()).abs()
+    df["atr"] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+    
+    if market_df is not None:
+        df["rs_index"] = df["Close"].pct_change(20) - market_df["Close"].pct_change(20).reindex(df.index)
+    else:
+        df["rs_index"] = 0
+    
+    df["avg_amount"] = (df["Close"] * df["Volume"]).rolling(5).mean()
     return df
 
-def audit_and_save(current_results, top_5_keys):
-    audit_msg = ""
+def audit_and_save(results, report_keys):
     if os.path.exists(HISTORY_FILE):
-        hist_df = pd.read_csv(HISTORY_FILE)
-        
-        # --- 關鍵修正區：處理日期格式不一的問題 ---
-        # 使用 errors='coerce' 將無法轉換的格式轉為 NaT，避免程式崩潰
-        hist_df['date'] = pd.to_datetime(hist_df['date'], errors='coerce')
-        # 移除日期無效的資料列
-        hist_df = hist_df.dropna(subset=['date'])
-        
-        # 統一將日期轉為不含時分秒的 datetime 物件以便比較
-        hist_df['date'] = hist_df['date'].dt.normalize()
-        deadline = (datetime.now() - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        to_settle = hist_df[(hist_df['date'] <= deadline) & (hist_df['settled'] == False)]
-        
-        if not to_settle.empty:
-            audit_msg = "\n🎯 **5日預估結算對帳單**\n"
-            for idx, row in to_settle.iterrows():
-                try:
-                    # 抓取最新股價
-                    stock_data = yf.Ticker(row['symbol']).history(period="1d")
-                    if stock_data.empty: continue
-                    curr_p = stock_data['Close'].iloc[-1]
-                    
-                    actual_ret = (curr_p - row['pred_p']) / row['pred_p']
-                    is_hit = "✅ 命中" if (actual_ret > 0 and row['pred_ret'] > 0) or (actual_ret < 0 and row['pred_ret'] < 0) else "❌ 錯誤"
-                    audit_msg += f"`{row['symbol']}`: 預估 `{row['pred_ret']:+.2%}` ➔ 實際 `{actual_ret:+.2%}` ({is_hit})\n"
-                    hist_df.at[idx, 'settled'] = True
-                except: 
-                    continue
-        # 儲存回 CSV 前，再次統一格式為 YYYY-MM-DD 字串
-        hist_df.to_csv(HISTORY_FILE, index=False)
+        hist = pd.read_csv(HISTORY_FILE)
+        hist["date"] = pd.to_datetime(hist["date"]).dt.date
     else:
-        hist_df = pd.DataFrame(columns=['date', 'symbol', 'pred_p', 'pred_ret', 'settled'])
+        hist = pd.DataFrame(columns=["date", "symbol", "pred_p", "pred_ret", "settled"])
     
-    # 新增今日預測紀錄，統一日期格式
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    new_recs = [{'date': today_str, 'symbol': s, 'pred_p': current_results[s]['c'], 'pred_ret': current_results[s]['p'], 'settled': False} for s in top_5_keys]
-    
-    hist_df = pd.concat([hist_df, pd.DataFrame(new_recs)], ignore_index=True)
-    hist_df.to_csv(HISTORY_FILE, index=False)
-    return audit_msg
+    today = datetime.now().date()
+    new_rows = [{"date": today, "symbol": s, "pred_p": results[s]["c"], "pred_ret": results[s]["p"], "settled": False} for s in report_keys]
+    hist = pd.concat([hist, pd.DataFrame(new_rows)], ignore_index=True).drop_duplicates(subset=["date", "symbol"], keep="last")
+    hist.to_csv(HISTORY_FILE, index=False)
 
 def run():
-    if not WEBHOOK_URL:
-        print("Error: DISCORD_WEBHOOK_URL is not set.")
-        return
-        
-    symbols = get_tw_300_pool()
-    must_watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
-    all_syms = list(set(symbols + must_watch))
+    is_bull, mkt_p, mkt_ma, mkt_df = get_market_context()
+    pool = get_tw_300_pool()
+    all_watch = list(set(MUST_WATCH + pool))
     
-    # 抓取資料
-    data = yf.download(all_syms, period="5y", progress=False)
+    print(f"🚀 台股 AI 分析啟動... (大盤:{'多頭' if is_bull else '空頭'})")
+    all_data = yf.download(all_watch, period="5y", group_by="ticker", auto_adjust=True, progress=False)
+    
+    feats = ["mom20", "rsi", "bias", "vol_ratio", "rs_index"]
     results = {}
-    feats = ["mom20", "rsi", "bias", "vol_ratio"]
-    
-    for s in all_syms:
+    MIN_AMOUNT = 100_000_000 # 1億
+
+    for s in all_watch:
         try:
-            df = data.xs(s, axis=1, level=1).dropna()
-            if len(df) < 60: continue # 確保資料足夠計算指標
+            df = all_data[s].dropna()
+            if len(df) < 150: continue
+            df = compute_features(df, market_df=mkt_df)
+            last = df.iloc[-1]
             
-            df = compute_features(df)
+            # --- 門檻檢查：如果不是 MUST_WATCH，才檢查成交量 ---
+            if s not in MUST_WATCH:
+                if last["avg_amount"] < MIN_AMOUNT: continue
+
             df["target"] = df["Close"].shift(-5) / df["Close"] - 1
-            train = df.dropna()
-            
-            model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.07)
+            train = df.dropna().iloc[-500:] 
+            if len(train) < 100: continue
+
+            model = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.03, 
+                                 subsample=0.8, colsample_bytree=0.8, random_state=42)
             model.fit(train[feats], train["target"])
             
-            pred = model.predict(df[feats].iloc[-1:])[0]
-            results[s] = {"p": pred, "c": df["Close"].iloc[-1], "s": df["sup"].iloc[-1], "r": df["res"].iloc[-1]}
-        except: 
-            continue
+            pred = float(np.clip(model.predict(train[feats].iloc[-1:])[0], -0.15, 0.15))
             
-    # 選出預估漲幅前五名
-    top_5 = sorted([s for s in results if s not in must_watch], key=lambda x: results[x]['p'], reverse=True)[:5]
-    audit_report = audit_and_save(results, top_5)
-    
-    # 組合 Discord 訊息
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    msg = f"🇹🇼 **台股 AI 預估報告 ({today})**\n"
-    msg += "----------------------------------\n"
-    msg += "🏆 **300 股票前 5 的未來預估**\n"
-    ranks = ["🥇", "🥈", "🥉", "📈", "📈"]
-    for idx, s in enumerate(top_5):
-        if s in results:
-            i = results[s]
-            msg += f"{ranks[idx]} **{s}**: `預估 {i['p']:+.2%}`\n"
-            msg += f"└ 現價: `{i['c']:.1f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
+            # 風控調整
+            if not is_bull: pred *= 0.5
+            if last["atr"] > (df["atr"].mean() * 1.5): pred *= 0.8
             
-    msg += "\n💎 **指定監控標的未來預估**\n"
-    for s in must_watch:
-        if s in results:
-            i = results[s]
-            msg += f"⭐ **{s}**: `預估 {i['p']:+.2%}`\n"
-            msg += f"└ 現價: `{i['c']:.1f}` (支撐: {i['s']:.1f} / 壓力: {i['r']:.1f})\n"
-            
-    msg += audit_report + "\n💡 *註：預估值為 AI 對未來 5 個交易日後的走勢判斷。*"
-    
-    # 發送至 Discord
-    requests.post(WEBHOOK_URL, json={"content": msg})
+            # --- 門檻檢查：如果不是 MUST_WATCH，才進行 1% 噪音過濾 ---
+            if s not in MUST_WATCH:
+                if pred < 0.01: pred = 0 
 
-if __name__ == "__main__": 
+            results[s] = {"p": pred, "c": float(last["Close"]), "rs": float(last["rs_index"])}
+        except: continue
+
+    # 分類結果
+    must_results = {k: v for k, v in results.items() if k in MUST_WATCH}
+    other_results = {k: v for k, v in results.items() if k not in MUST_WATCH}
+    
+    # 篩選非指定股票的前 5 名 (且預測值大於 0)
+    top_others = sorted(other_results, key=lambda x: other_results[x]['p'], reverse=True)[:5]
+    top_others = [k for k in top_others if other_results[k]["p"] > 0]
+
+    # 彙整需要報告的所有股票 (指定股票優先)
+    report_keys = list(must_results.keys()) + top_others
+    audit_and_save(results, report_keys)
+    
+    # 建立訊息
+    msg = f"🇹🇼 **台股 AI 進階預報 ({datetime.now():%m/%d})**\n"
+    msg += f"{'📈 多頭環境' if is_bull else '⚠️ 空頭警示 (預測已降權)'} | 指數: {mkt_p:.0f}\n"
+    msg += "----------------------------------\n"
+    
+    # 輸出指定股票
+    msg += "📌 **監測清單 (不設門檻)**\n"
+    for s in MUST_WATCH:
+        if s in results:
+            r = results[s]
+            msg += f"🔹 {s}: `{r['p']:+.2%}` | 價格: {r['c']}\n"
+        else:
+            msg += f"🔹 {s}: 數據不足\n"
+    
+    msg += "\n🔥 **AI 推薦排行 (經門檻過濾)**\n"
+    if not top_others:
+        msg += "💡 市場訊號不足，建議觀望。\n"
+    else:
+        for i, s in enumerate(top_others):
+            r = results[s]
+            msg += f"{['🥇','🥈','🥉','📈','📈'][i]} **{s}** 預估 `{r['p']:+.2%}` | RS:{'強' if r['rs']>0 else '弱'}\n"
+    
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
+    else:
+        print(msg)
+
+if __name__ == "__main__":
     run()
