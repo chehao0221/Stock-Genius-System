@@ -10,10 +10,13 @@ import warnings
 
 warnings.filterwarnings("ignore")
 DISCORD_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
-CACHE_FILE = "data/news_cache.json"
+
+# 修正路徑邏輯
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
 
 def get_live_news(query):
-    """抓取 Google News 並過濾 12 小時內的最新消息"""
     try:
         safe_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={safe_query}&hl=zh-TW&gl=TW&ceid=TW:zh-TW"
@@ -41,17 +44,16 @@ def load_cache():
     return {}
 
 def save_cache(cache):
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=4)
 
 def get_ai_top_symbols(market="TW"):
-    """自動從 AI 預測紀錄中抓取最新的 Top 5 標的"""
     try:
-        file_path = "data/tw_history.csv" if market == "TW" else "data/us_history.csv"
+        file_name = "tw_history.csv" if market == "TW" else "us_history.csv"
+        file_path = os.path.join(DATA_DIR, file_name)
         if not os.path.exists(file_path): return []
         df = pd.read_csv(file_path)
-        # 取得最近一次預測日期
         latest_date = df['date'].max()
         top_5 = df[df['date'] == latest_date].sort_values(by='pred_ret', ascending=False).head(5)
         return top_5['symbol'].tolist()
@@ -66,10 +68,8 @@ def run():
     news_cache = load_cache()
     new_messages = []
 
-    # --- 💡 自動判定市場並抓取 AI 標的 ---
     if now.hour < 12:
         market_title = "🏹 AI 台股海選雷達"
-        # 優先抓取 AI 海選標的，若無則用預設權值
         ai_symbols = get_ai_top_symbols("TW")
         watch_list = {s: "AI 海選強勢股" for s in ai_symbols} if ai_symbols else {"2330.TW": "台積電", "2317.TW": "鴻海"}
     else:
@@ -79,7 +79,6 @@ def run():
 
     for sym, label in watch_list.items():
         try:
-            # 針對搜尋詞優化：2330.TW -> 2330
             search_key = sym.split('.')[0]
             news = get_live_news(search_key)
             if not news or news_cache.get(sym) == news['title']:
