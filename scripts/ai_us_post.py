@@ -8,6 +8,15 @@ from datetime import datetime
 import warnings
 
 # ===============================
+# 🔴 L4 ACTIVE CHECK（最優先）
+# ===============================
+L4_ACTIVE_FILE = os.getenv("L4_ACTIVE_FILE", "data/l4_active.flag")
+
+if os.path.exists(L4_ACTIVE_FILE):
+    print("🚨 L4 active detected — US AI analysis skipped")
+    sys.exit(0)
+
+# ===============================
 # Project Base / Data Directory
 # ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -187,7 +196,6 @@ def run():
         header=not os.path.exists(HISTORY_FILE),
         index=False,
     )
-
 
 if __name__ == "__main__":
     run()
