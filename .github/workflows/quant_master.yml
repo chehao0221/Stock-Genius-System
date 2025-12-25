@@ -2,13 +2,13 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 每一小時執行一次新聞雷達 (UTC 0-23 的 00 分)
+    # 1. 每一小時執行一次新聞雷達
     - cron: '0 * * * *'
 
-    # 2. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30
+    # 2. 台股盤後 AI 分析（台北 15:30）
     - cron: '30 07 * * 1-5'
 
-    # 3. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00
+    # 3. 美股盤後 AI 分析（台北 06:00）
     - cron: '00 22 * * 1-5'
 
   workflow_dispatch:
@@ -37,6 +37,8 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
+          BLACK_SWAN_WEBHOOK_URL: ${{ secrets.BLACK_SWAN_WEBHOOK_URL }}
+          L4_ACTIVE_FILE: data/l4_active.flag
         run: |
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
@@ -50,7 +52,7 @@ jobs:
             python scripts/news_radar.py
           fi
 
-          # 2. AI 分析
+          # 2. AI 分析（L4 active 時會自動被 script 擋掉）
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "Manual trigger: Run ALL AI tasks"
             python scripts/ai_tw_post.py
