@@ -41,32 +41,32 @@ jobs:
 
           echo "🕒 UTC $HOUR:$MINUTE | Event: ${{ github.event_name }}"
 
-          SYSTEM_MODE="🟢 NORMAL"
+          SYSTEM_MODE="🟢 系統狀態：正常運作"
 
           if [ -f "$L4_ACTIVE_FILE" ]; then
-            SYSTEM_MODE="🔴 L4 ACTIVE"
+            SYSTEM_MODE="🔴 系統狀態：黑天鵝防禦模式"
           elif [ -f "$OBS_FILE" ]; then
             LAST_END=$(cat $OBS_FILE || echo 0)
             DIFF=$((NOW_TS - LAST_END))
             if [ "$DIFF" -lt 86400 ]; then
-              SYSTEM_MODE="🟠 OBSERVATION"
+              SYSTEM_MODE="🟠 系統狀態：風險觀察期"
             fi
           fi
 
-          echo "SYSTEM MODE: $SYSTEM_MODE"
+          echo "$SYSTEM_MODE"
 
-          # 🔔 Discord system mode sync (once per day at UTC 00:00)
+          # 🔔 Discord 每日系統狀態同步（UTC 00:00）
           if [ "$HOUR" == "00" ] && [ "$MINUTE" == "00" ]; then
             if [ -n "$DISCORD_WEBHOOK_URL" ]; then
               curl -s -X POST "$DISCORD_WEBHOOK_URL" \
                 -H "Content-Type: application/json" \
                 -d "{
-                  \"content\": \"🧠 **Quant System Daily Status**\\n$SYSTEM_MODE\\n🕒 UTC $(date '+%Y-%m-%d %H:%M')\"
+                  \"content\": \"🧠 **量化系統每日狀態回報**\\n$SYSTEM_MODE\\n\\n📌 提醒：僅為風險與市場監控，非投資建議\\n🕒 UTC $(date '+%Y-%m-%d %H:%M')\"
                 }"
             fi
           fi
 
-          # 1. 新聞雷達（整點 或 手動）
+          # 1. 新聞雷達
           if [ "$MINUTE" == "00" ] || [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
             python scripts/news_radar.py
           fi
