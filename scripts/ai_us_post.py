@@ -1,11 +1,11 @@
 import os
 import sys
+import warnings
+import requests
 import yfinance as yf
 import pandas as pd
-import requests
 from xgboost import XGBRegressor
 from datetime import datetime
-import warnings
 
 # ===============================
 # Base / Data
@@ -18,36 +18,18 @@ sys.path.append(BASE_DIR)
 warnings.filterwarnings("ignore")
 
 # ===============================
-# L4 / Observation Flags（只讀）
+# 🔴 L4 / 🟡 L3 FLAGS
 # ===============================
-L4_ACTIVE_FILE = os.getenv(
-    "L4_ACTIVE_FILE",
-    os.path.join(DATA_DIR, "l4_active.flag")
-)
-OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
+L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
+L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
-def get_system_mode():
-    now = datetime.now().timestamp()
-
-    if os.path.exists(L4_ACTIVE_FILE):
-        return "🔴 SYSTEM MODE：L4 ACTIVE"
-
-    if os.path.exists(OBS_FLAG_FILE):
-        try:
-            last_end = float(open(OBS_FLAG_FILE).read().strip())
-            if now - last_end < 86400:
-                return "🟠 SYSTEM MODE：OBSERVATION"
-        except Exception:
-            pass
-
-    return "🟢 SYSTEM MODE：NORMAL"
-
-MODE = get_system_mode()
-
-# 🔴 L4 期間 → 直接中止 AI
-if MODE.startswith("🔴"):
-    print("🚨 L4 active detected — US AI analysis skipped")
+# 🔴 L4 → 直接停機
+if os.path.exists(L4_ACTIVE_FILE):
+    print("🚨 L4 active — US AI analysis skipped")
     sys.exit(0)
+
+# 🟡 L3 → 降速模式
+L3_WARNING = os.path.exists(L3_WARNING_FILE)
 
 # ===============================
 # Settings
@@ -56,7 +38,7 @@ HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # ===============================
-# Utilities
+# Utils
 # ===============================
 def calc_pivot(df):
     r = df.iloc[-20:]
@@ -68,53 +50,19 @@ def get_sp500():
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        df = pd.read_html(
-            requests.get(url, headers=headers, timeout=10).text
-        )[0]
+        df = pd.read_html(requests.get(url, headers=headers, timeout=10).text)[0]
         return [s.replace(".", "-") for s in df["Symbol"]]
     except Exception:
-        return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
-
-# ===============================
-# 5-Day Settle Report
-# ===============================
-def get_settle_report():
-    if not os.path.exists(HISTORY_FILE):
-        return ""
-
-    df = pd.read_csv(HISTORY_FILE)
-    unsettled = df[df["settled"] == False]
-
-    if unsettled.empty:
-        return ""
-
-    report = "\n🏁 **美股 5 日回測結算**\n"
-
-    for idx, row in unsettled.iterrows():
-        try:
-            price_df = yf.download(
-                row["symbol"],
-                period="7d",
-                auto_adjust=True,
-                progress=False,
-            )
-            exit_price = price_df["Close"].iloc[-1]
-            ret = (exit_price - row["entry_price"]) / row["entry_price"]
-            df.at[idx, "settled"] = True
-
-            report += f"• `{row['symbol']}` `{ret:+.2%}`\n"
-        except Exception:
-            continue
-
-    df.to_csv(HISTORY_FILE, index=False)
-    return report
+        return []
 
 # ===============================
 # Main
 # ===============================
 def run():
-    mag_7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
-    watch = list(dict.fromkeys(mag_7 + get_sp500()))
+    mag7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
+
+    # 🟡 L3：只跑固定股
+    watch = mag7 if L3_WARNING else list(dict.fromkeys(mag7 + get_sp500()))
 
     data = yf.download(
         watch,
@@ -162,39 +110,47 @@ def run():
             continue
 
     # =========================
-    # Compose Message
+    # Message Compose
     # =========================
-    msg = f"{MODE}\n\n📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
+    mode = (
+        "🟡 **SYSTEM MODE：RISK WARNING (L3)**"
+        if L3_WARNING
+        else "🟢 **SYSTEM MODE：NORMAL**"
+    )
+
+    msg = f"{mode}\n\n📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
     msg += "------------------------------------------\n\n"
 
     medals = ["🥇", "🥈", "🥉", "📈", "📈"]
-    top_5 = []
 
-    if MODE.endswith("NORMAL"):
-        horses = {
-            k: v for k, v in results.items()
-            if k not in mag_7 and v["pred"] > 0
-        }
-        top_5 = sorted(
-            horses, key=lambda x: horses[x]["pred"], reverse=True
-        )[:5]
+    # 🟢 正常模式才有 Top 5
+    top_5 = []
+    if not L3_WARNING:
+        horses = {k: v for k, v in results.items() if k not in mag7 and v["pred"] > 0}
+        top_5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
 
         msg += "🏆 **AI 海選 Top 5 (潛力股)**\n"
         for i, s in enumerate(top_5):
             r = results[s]
-            msg += f"{medals[i]} {s}: `{r['pred']:+.2%}`\n"
+            msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
+            msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+        msg += "\n"
     else:
-        msg += "⚠️ 觀察期中，暫停海選潛力股\n\n"
+        msg += "⚠️ 觀察 / 預警期中，暫停 AI 海選潛力股\n\n"
 
-    msg += "\n💎 **Magnificent 7 監控 (固定顯示)**\n"
-    for s in mag_7:
+    # Magnificent 7 永遠顯示
+    msg += "💎 **Magnificent 7 監控 (固定顯示)**\n"
+    for s in mag7:
         if s in results:
             r = results[s]
-            msg += f"{s}: `{r['pred']:+.2%}`\n"
+            msg += f"{s}: 預估 `{r['pred']:+.2%}`\n"
+            msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
 
-    msg += get_settle_report()
     msg += "\n💡 AI 為機率模型，僅供研究參考"
 
+    # =========================
+    # Send
+    # =========================
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
     else:
@@ -203,7 +159,7 @@ def run():
     # =========================
     # Save History（僅 NORMAL）
     # =========================
-    if MODE.endswith("NORMAL"):
+    if not L3_WARNING:
         hist = [
             {
                 "date": datetime.now().date(),
@@ -212,7 +168,7 @@ def run():
                 "pred_ret": results[s]["pred"],
                 "settled": False,
             }
-            for s in (top_5 + mag_7)
+            for s in (top_5 + mag7)
             if s in results
         ]
 
