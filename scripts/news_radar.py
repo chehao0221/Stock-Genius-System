@@ -24,6 +24,7 @@ warnings.filterwarnings("ignore")
 
 NEWS_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
 BLACK_SWAN_WEBHOOK_URL = os.getenv("BLACK_SWAN_WEBHOOK_URL", "").strip()
+L4_ACTIVE_FILE = os.getenv("L4_ACTIVE_FILE", "data/l4_active.flag")
 
 CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
 BLACK_SWAN_CSV = os.path.join(DATA_DIR, "black_swan_history.csv")
@@ -135,30 +136,60 @@ def log_black_swan(level, symbol, market, title, link):
         ])
 
 # ===============================
+# Helpers from AI history
+# ===============================
+def get_today_ai_top(market="TW"):
+    file = "tw_history.csv" if market == "TW" else "us_history.csv"
+    path = os.path.join(DATA_DIR, file)
+    if not os.path.exists(path):
+        return []
+    df = pd.read_csv(path)
+    latest = df["date"].max()
+    return (
+        df[df["date"] == latest]
+        .sort_values("pred_ret", ascending=False)
+        .head(5)["symbol"]
+        .tolist()
+    )
+
+# ===============================
 # Main
 # ===============================
 def run():
-    if not NEWS_WEBHOOK_URL:
-        return
-
     now = datetime.datetime.now(TZ_TW)
     now_ts = now.timestamp()
-
-    market = "TW" if now.hour < 12 else "US"
-    market_open = is_market_open(market)
 
     cache = load_cache()
     cache.setdefault("_l3_events", [])
     cache.setdefault("_l4_pause_until", 0)
 
+    # ===============================
+    # L4 AUTO RECOVER
+    # ===============================
+    if os.path.exists(L4_ACTIVE_FILE) and now_ts > cache["_l4_pause_until"]:
+        os.remove(L4_ACTIVE_FILE)
+
+        if BLACK_SWAN_WEBHOOK_URL:
+            requests.post(
+                BLACK_SWAN_WEBHOOK_URL,
+                json={
+                    "content": (
+                        "📊 **L4 黑天鵝事件回顧（自動）**\n"
+                        f"🕒 結束時間：{now:%Y-%m-%d %H:%M}\n"
+                        "✅ 系統已解除 L4 狀態\n"
+                        "▶️ AI 分析已自動恢復"
+                    )
+                },
+                timeout=15,
+            )
+
+    market = "TW" if now.hour < 12 else "US"
+    market_open = is_market_open(market)
+
+    symbols = get_today_ai_top(market) if market_open else []
+
     normal_embeds = []
     black_embeds = []
-
-    symbols = (
-        get_today_ai_top(market)
-        if market_open
-        else []
-    )
 
     for sym in symbols:
         news = get_live_news(sym.split(".")[0])
@@ -171,8 +202,8 @@ def run():
             continue
 
         cache[sym] = news["title"]
-
         final_level = level
+
         if level == 3:
             cache["_l3_events"].append(now_ts)
             window = now_ts - L4_TIME_WINDOW_HOURS * 3600
@@ -182,24 +213,32 @@ def run():
                 final_level = 4
                 cache["_l4_pause_until"] = now_ts + L4_NEWS_PAUSE_HOURS * 3600
 
-        if final_level >= 3:
-            symbol_display = "GLOBAL" if final_level == 4 else sym
-            market_display = "GLOBAL" if final_level == 4 else market
+                with open(L4_ACTIVE_FILE, "w") as f:
+                    f.write(str(now_ts))
 
+        if final_level >= 3:
             embed = {
-                "title": f"{symbol_display} | 系統性黑天鵝" if final_level == 4 else f"{sym} | 黑天鵝",
+                "title": "GLOBAL | 系統性黑天鵝" if final_level == 4 else f"{sym} | 黑天鵝",
                 "url": news["link"],
                 "color": 0x8E0000 if final_level == 4 else 0xE74C3C,
                 "fields": [
                     {
-                        "name": "🚨🚨 黑天鵝 L4（系統性風險）" if final_level == 4 else "🚨 黑天鵝 L3",
-                        "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
+                        "name": "🚨🚨 黑天鵝 L4（系統性風險）"
+                        if final_level == 4
+                        else "🚨 黑天鵝 L3",
+                        "value": (
+                            f"[{news['title']}]({news['link']})\n"
+                            f"🕒 {news['time']}\n"
+                            "📍 狀態：L4 active（AI 已凍結）"
+                            if final_level == 4
+                            else f"[{news['title']}]({news['link']})\n🕒 {news['time']}"
+                        ),
                         "inline": False,
                     }
                 ],
             }
             black_embeds.append(embed)
-            log_black_swan(final_level, symbol_display, market_display, news["title"], news["link"])
+            log_black_swan(final_level, sym, market, news["title"], news["link"])
 
         else:
             if now_ts < cache["_l4_pause_until"]:
@@ -218,7 +257,7 @@ def run():
                 ],
             })
 
-    if normal_embeds:
+    if normal_embeds and NEWS_WEBHOOK_URL:
         requests.post(
             NEWS_WEBHOOK_URL,
             json={
@@ -239,18 +278,6 @@ def run():
         )
 
     save_cache(cache)
-
-# ===============================
-# Helpers from AI history
-# ===============================
-def get_today_ai_top(market="TW"):
-    file = "tw_history.csv" if market == "TW" else "us_history.csv"
-    path = os.path.join(DATA_DIR, file)
-    if not os.path.exists(path):
-        return []
-    df = pd.read_csv(path)
-    latest = df["date"].max()
-    return df[df["date"] == latest].sort_values("pred_ret", ascending=False).head(5)["symbol"].tolist()
 
 if __name__ == "__main__":
     run()
