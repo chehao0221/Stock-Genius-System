@@ -2,13 +2,11 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 新聞雷達：改成天天跑 (移除 1-5)，每小時整點觸發
+    # 1. 新聞雷達：每小時整點觸發 (台北時間各整點)
     - cron: '0 * * * *'
-
-    # 2. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30 (維持 1-5)
+    # 2. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30
     - cron: '30 07 * * 1-5'
-
-    # 3. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00 (維持 1-5)
+    # 3. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00
     - cron: '00 22 * * 1-5'
 
   workflow_dispatch:
@@ -17,14 +15,20 @@ jobs:
   quant_tasks:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 確保有權限寫入 CSV 與新聞快取
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 獲取完整歷史以利自動提交
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
+
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
@@ -32,34 +36,52 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
+          TZ: Asia/Taipei # 設定環境時區
         run: |
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
-          # 獲取當前是週幾 (1-5 是平日, 6-7 是週末)
           DAY_OF_WEEK=$(date +%u)
 
-          echo "Current UTC Time: $HOUR:$MINUTE, Day: $DAY_OF_WEEK"
+          echo "Current Time: $HOUR:$MINUTE, Day: $DAY_OF_WEEK"
 
-          # 任務 1：新聞雷達 (每天整點都跑)
+          # --- 任務 1：新聞雷達 (整合後的智能版本) ---
+          # 只要是整點，或手動執行時，就跑新聞雷達
           if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "Running News Radar (Daily)..."
+            echo "Running News Radar..."
             python scripts/news_radar.py
           fi
 
-          # 任務 2：AI 分析 (只有平日跑，或手動執行才跑)
+          # --- 任務 2：AI 分析 (平日或手動) ---
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "Manual trigger: Run ALL AI tasks"
+            echo "Manual trigger: Run AI tasks"
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            # 只有在週一至週五 (1-5) 才執行 AI 分析
             if [ "$DAY_OF_WEEK" -le 5 ]; then
-              if [ "$HOUR" == "07" ] && [ "$MINUTE" == "30" ]; then
+              if [ "$HOUR" == "15" ] && [ "$MINUTE" == "30" ]; then
                 echo "Scheduled: Taiwan AI Analysis"
                 python scripts/ai_tw_post.py
-              elif [ "$HOUR" == "22" ] && [ "$MINUTE" == "00" ]; then
+              elif [ "$HOUR" == "06" ] && [ "$MINUTE" == "00" ]; then
                 echo "Scheduled: US AI Analysis"
                 python scripts/ai_us_post.py
               fi
             fi
+          fi
+
+      - name: Auto Sync Data back to GitHub
+        run: |
+          git config --local user.name "Quant-Master-Bot"
+          git config --local user.email "actions@github.com"
+          
+          # 加入所有變動過的數據檔案 (CSV 和新聞快取)
+          git add data/*.csv data/*.json data/*.txt || true
+          
+          # 防止衝突：拉取遠端變更
+          git pull --rebase --autostash origin main
+          
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-update: Market Data & News Cache [skip ci]"
+            git push origin main
+          else
+            echo "No changes to commit."
           fi
