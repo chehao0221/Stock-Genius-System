@@ -2,8 +2,15 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 每天每個整點跑一次，確保新聞不漏接（包含假日）
+    # 1. 每一小時執行一次新聞雷達 (UTC 0-23 的 00 分)
     - cron: '0 * * * *'
+
+    # 2. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30
+    - cron: '30 07 * * 1-5'
+
+    # 3. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00
+    - cron: '00 22 * * 1-5'
+
   workflow_dispatch:
 
 jobs:
@@ -13,8 +20,9 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,22 +38,43 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
-          # 1. 執行新聞雷達 (不論是否開盤，每個整點都檢查新聞)
-          python scripts/news_radar.py
-
-          # 2. 在指定時間執行 AI 預測 (Python 內部會判斷是否開盤)
           HOUR=$(date +%H)
-          if [ "$HOUR" == "07" ]; then # 台北 15:00 盤後分析
-            python scripts/ai_tw_post.py
-          elif [ "$HOUR" == "22" ]; then # 台北 06:00 美股收盤分析
-            python scripts/ai_us_post.py
+          MINUTE=$(date +%M)
+
+          echo "Current UTC Time: $HOUR:$MINUTE"
+          echo "Trigger: ${{ github.event_name }}"
+
+          # 1. 新聞雷達（整點 或 手動）
+          if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Running News Radar"
+            python scripts/news_radar.py
           fi
 
-      - name: Auto Sync Data back to GitHub
-        if: always()
+          # 2. AI 分析
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Manual trigger: Run ALL AI tasks"
+            python scripts/ai_tw_post.py
+            python scripts/ai_us_post.py
+          else
+            if [ "$HOUR" == "07" ] && [ "$MINUTE" == "30" ]; then
+              echo "Scheduled: Taiwan AI"
+              python scripts/ai_tw_post.py
+            elif [ "$HOUR" == "22" ] && [ "$MINUTE" == "00" ]; then
+              echo "Scheduled: US AI"
+              python scripts/ai_us_post.py
+            fi
+          fi
+
+      - name: Commit and Push
         run: |
-          git config --local user.name "Quant-Master-Bot"
-          git config --local user.email "actions@github.com"
-          git add data/*.csv data/news_cache.txt || true
-          git commit -m "Auto sync: news & analytics [skip ci]" || echo "No changes to commit"
-          git push || echo "Push failed"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          git add data/
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update history and news cache [skip ci]"
+            git push
+          fi
