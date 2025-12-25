@@ -1,188 +1,163 @@
-import os
-import sys
 import yfinance as yf
 import requests
 import datetime
+import os
 import feedparser
 import urllib.parse
-import pandas as pd
-import json
-import warnings
+import sys
 
-# ===============================
-# Project Base / Data Directory
-# ===============================
+# =============================
+# 專案路徑與基礎設定
+# =============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.path.join(BASE_DIR, \"data\")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 確保可以 import 專案內模組（若有）
-if BASE_DIR not in sys.path:
-    sys.path.append(BASE_DIR)
+DISCORD_WEBHOOK_URL = os.getenv(\"NEWS_WEBHOOK_URL\", \"\").strip()
+CACHE_FILE = os.path.join(DATA_DIR, \"news_cache.txt\")
+TZ_TW = datetime.timezone(datetime.timedelta(hours=8))
+MAX_EMBEDS = 8
+NEWS_HOURS_LIMIT = 6  # 縮短時間限制，確保消息夠即時
 
-# ===============================
-# Basic Settings
-# ===============================
-warnings.filterwarnings("ignore")
-DISCORD_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
-CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
+PRICE_CACHE = {}
 
-# ===============================
-# Functions
-# ===============================
-def get_live_news(query):
+# =============================
+# 股價快取系統 ( yfinance 優化版 )
+# =============================
+def get_stock_price(sym):
+    if sym in PRICE_CACHE: return PRICE_CACHE[sym]
     try:
-        safe_query = urllib.parse.quote(query)
-        url = (
-            "https://news.google.com/rss/search?"
-            f"q={safe_query}&hl=zh-TW&gl=TW&ceid=TW:zh-TW"
-        )
-        feed = feedparser.parse(url)
+        t = yf.Ticker(sym)
+        info = t.fast_info
+        price = info.get(\"last_price\") or t.info.get(\"regularMarketPrice\")
+        prev = info.get(\"previous_close\") or t.info.get(\"regularMarketPreviousClose\")
+        if price and prev:
+            pct = ((price - prev) / prev) * 100
+            PRICE_CACHE[sym] = (price, pct)
+            return price, pct
+    except: pass
+    PRICE_CACHE[sym] = (None, None)
+    return None, None
 
-        if not feed.entries:
-            return None
+# =============================
+# 重點標的對照表 (融入 AI 系統核心標的)
+# =============================
+STOCK_MAP = {
+    \"台積電\": {\"sym\": \"2330.TW\", \"desc\": \"AI晶片 / 先進製程\"},
+    \"2330\": {\"sym\": \"2330.TW\", \"desc\": \"AI晶片 / 先進製程\"},
+    \"鴻海\": {\"sym\": \"2317.TW\", \"desc\": \"AI伺服器 / 組裝\"},
+    \"2317\": {\"sym\": \"2317.TW\", \"desc\": \"AI伺服器 / 組裝\"},
+    \"輝達\": {\"sym\": \"NVDA\", \"desc\": \"NVIDIA / AI龍頭\"},
+    \"NVIDIA\": {\"sym\": \"NVDA\", \"desc\": \"NVIDIA / AI龍頭\"},
+    \"特斯拉\": {\"sym\": \"TSLA\", \"desc\": \"Tesla / 電動車\"},
+    \"TSLA\": {\"sym\": \"TSLA\", \"desc\": \"Tesla / 電動車\"},
+    \"蘋果\": {\"sym\": \"AAPL\", \"desc\": \"Apple / 手機端AI\"},
+    \"AAPL\": {\"sym\": \"AAPL\", \"desc\": \"Apple / 手機端AI\"},
+}
 
-        entry = feed.entries[0]
-        pub_time = datetime.datetime(*entry.published_parsed[:6])
-        now_time = datetime.datetime.utcnow()
+STOCK_WEIGHT = {\"2330.TW\": 5, \"NVDA\": 5, \"2317.TW\": 4, \"TSLA\": 4}
 
-        if (now_time - pub_time).total_seconds() / 3600 > 12:
-            return None
+# =============================
+# 核心邏輯：重要度判定
+# =============================
+def pick_most_important_stock(title):
+    hits = []
+    title_lower = title.lower()
+    seen_sym = set()
+    for key, info in STOCK_MAP.items():
+        pos = title_lower.find(key.lower())
+        if pos >= 0:
+            sym = info[\"sym\"]
+            if sym in seen_sym: continue
+            seen_sym.add(sym)
+            weight = STOCK_WEIGHT.get(sym, 1)
+            score = weight * 100 - pos
+            hits.append((score, info))
+    if not hits: return None
+    hits.sort(reverse=True, key=lambda x: x[0])
+    return hits[0][1]
 
-        return {
-            "title": entry.title.split(" - ")[0],
-            "link": entry.link,
-            "time": (pub_time + datetime.timedelta(hours=8)).strftime("%H:%M")
-        }
-    except Exception:
-        return None
+def create_news_embed(post, market_type):
+    color = 0x3498db if market_type == \"TW\" else 0xe74c3c
+    target = pick_most_important_stock(post[\"title\"])
 
-
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def save_cache(cache):
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=4)
-
-
-def get_ai_top_symbols(market="TW"):
-    try:
-        file_name = "tw_history.csv" if market == "TW" else "us_history.csv"
-        file_path = os.path.join(DATA_DIR, file_name)
-
-        if not os.path.exists(file_path):
-            return []
-
-        df = pd.read_csv(file_path)
-        latest_date = df["date"].max()
-
-        top_5 = (
-            df[df["date"] == latest_date]
-            .sort_values(by="pred_ret", ascending=False)
-            .head(5)
-        )
-        return top_5["symbol"].tolist()
-    except Exception:
-        return []
-
-
-def run():
-    if not DISCORD_WEBHOOK_URL:
-        return
-
-    tz = datetime.timezone(datetime.timedelta(hours=8))
-    now = datetime.datetime.now(tz)
-
-    news_cache = load_cache()
-    new_messages = []
-
-    if now.hour < 12:
-        market_title = "🏹 AI 台股海選雷達"
-        ai_symbols = get_ai_top_symbols("TW")
-        watch_list = (
-            {s: "AI 海選強勢股" for s in ai_symbols}
-            if ai_symbols
-            else {"2330.TW": "台積電", "2317.TW": "鴻海"}
-        )
-    else:
-        market_title = "⚡ AI 美股海選雷達"
-        ai_symbols = get_ai_top_symbols("US")
-        watch_list = (
-            {s: "AI 海選強勢股" for s in ai_symbols}
-            if ai_symbols
-            else {"NVDA": "輝達", "TSLA": "特斯拉"}
-        )
-
-    for sym, label in watch_list.items():
-        try:
-            search_key = sym.split(".")[0]
-            news = get_live_news(search_key)
-
-            if not news or news_cache.get(sym) == news["title"]:
-                continue
-
-            news_cache[sym] = news["title"]
-
-            ticker = yf.Ticker(sym)
-            df = ticker.history(period="2d")
-
-            if len(df) < 2:
-                continue
-
-            curr_p = df["Close"].iloc[-1]
-            change_pct = (
-                (curr_p - df["Close"].iloc[-2]) / df["Close"].iloc[-2] * 100
-            )
-
-            color = 0xFF4500 if change_pct > 0 else 0x1E90FF
-
-            embed = {
-                "title": f"{sym} | {label}",
-                "description": "AI 預測目標標的 - **最新消息**",
-                "color": color,
-                "fields": [
-                    {
-                        "name": "💵 當前報價",
-                        "value": f"`{curr_p:.2f}` ({change_pct:+.2f}%)",
-                        "inline": True,
-                    },
-                    {
-                        "name": "🗞️ 焦點頭條",
-                        "value": f"[{news['title']}]({news['link']})\n*(🕒 {news['time']})*",
-                        "inline": False,
-                    },
+    if target:
+        price, pct = get_stock_price(target[\"sym\"])
+        if price:
+            trend = \"📈 利多\" if pct > 0 else \"📉 利空\" if pct < 0 else \"➖ 中性\"
+            return {
+                \"title\": f\"📊 {target['sym']} | {target['desc']}\",
+                \"url\": post[\"link\"],
+                \"color\": color,
+                \"fields\": [
+                    {\"name\": \"⚖️ 市場判斷\", \"value\": trend, \"inline\": True},
+                    {\"name\": \"💵 即時價格\", \"value\": f\"**{price:.2f} ({pct:+.2f}%)**\", \"inline\": True},
+                    {\"name\": \"📰 焦點新聞\", \"value\": f\"[{post['title']}]({post['link']})\\n🕒 {post['time']}\", \"inline\": False},
                 ],
-                "footer": {"text": "Quant Master AI-Radar"},
+                \"footer\": {\"text\": \"Quant Master AI-Radar\"}
+            }
+    
+    return {
+        \"title\": post[\"title\"],
+        \"url\": post[\"link\"],
+        \"color\": color,
+        \"fields\": [
+            {\"name\": \"🕒 發布時間\", \"value\": f\"{post['time']} (台北)\", \"inline\": True},
+            {\"name\": \"📰 新聞來源\", \"value\": post[\"source\"], \"inline\": True},
+        ],
+        \"footer\": {\"text\": \"Quant Master AI-Radar\"}
+    }
+
+# =============================
+# 主執行邏輯
+# =============================
+def run_radar():
+    if not DISCORD_WEBHOOK_URL: return
+    
+    sent_titles = set()
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, \"r\", encoding=\"utf-8\") as f:
+            sent_titles = {l.strip() for l in f if l.strip()}
+
+    now_tw = datetime.datetime.now(TZ_TW)
+    market = \"TW\" if 8 <= now_tw.hour < 17 else \"US\"
+    queries = [\"台股 財經\", \"台積電 鴻海\"] if market == \"TW\" else [\"美股 盤前\", \"輝達 特斯拉\"]
+    
+    collected = {}
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    for q in queries:
+        url = f\"https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-TW\"
+        feed = feedparser.parse(url)
+        for e in feed.entries[:10]:
+            title = e.title.split(\" - \")[0]
+            if title in sent_titles or title in collected: continue
+            if not hasattr(e, \"published_parsed\"): continue
+            pub_utc = datetime.datetime(*e.published_parsed[:6], tzinfo=datetime.timezone.utc)
+            if (now_utc - pub_utc).total_seconds() / 3600 > NEWS_HOURS_LIMIT: continue
+            
+            collected[title] = {
+                \"title\": title, \"link\": e.link, \"source\": e.title.split(\" - \")[-1],
+                \"time\": pub_utc.astimezone(TZ_TW).strftime(\"%H:%M\"), \"sort\": pub_utc
             }
 
-            new_messages.append(embed)
-        except Exception:
-            continue
+    posts = sorted(collected.values(), key=lambda x: x[\"sort\"], reverse=True)[:MAX_EMBEDS]
+    if not posts: return
 
-    if new_messages:
-        requests.post(
-            DISCORD_WEBHOOK_URL,
-            json={
-                "content": (
-                    f"### {market_title}\n"
-                    f"📅 `{now.strftime('%H:%M')}` AI 自動追蹤新消息\n"
-                    + "━" * 15
-                )
-            },
-        )
-        for msg in new_messages:
-            requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [msg]})
+    embeds = [create_news_embed(p, market) for p in posts]
+    
+    # 分批推播 (Discord 限制一則訊息最多 10 個 embeds)
+    requests.post(DISCORD_WEBHOOK_URL, json={
+        \"content\": f\"### 📡 AI 金融雷達 ({'台股' if market=='TW' else '美股'}時段)\\n📅 `{now_tw.strftime('%Y-%m-%d %H:%M')}`\"
+    })
+    
+    for i in range(0, len(embeds), 4):
+        requests.post(DISCORD_WEBHOOK_URL, json={\"embeds\": embeds[i:i+4]})
 
-        save_cache(news_cache)
+    # 更新紀錄
+    sent_titles.update(p[\"title\"] for p in posts)
+    with open(CACHE_FILE, \"w\", encoding=\"utf-8\") as f:
+        for t in list(sent_titles)[-200:]: f.write(f\"{t}\\n\")
 
-
-if __name__ == "__main__":
-    run()
+if __name__ == \"__main__\":
+    run_radar()
