@@ -1,5 +1,4 @@
-import os, sys, json, csv, warnings, datetime, requests, feedparser, urllib.parse
-import yfinance as yf
+import os, sys, json, warnings, datetime, requests, feedparser, urllib.parse
 import pandas as pd
 
 # ===============================
@@ -21,7 +20,6 @@ L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
 
 CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
-BLACK_SWAN_CSV = os.path.join(DATA_DIR, "black_swan_history.csv")
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))
 warnings.filterwarnings("ignore")
@@ -33,6 +31,8 @@ L4_TIME_WINDOW_HOURS = 6
 L4_TRIGGER_COUNT = 2
 L4_NEWS_PAUSE_HOURS = 24
 L3_COOLDOWN_HOURS = 6
+
+DISCLAIMER = "📌 提醒：僅為風險與市場監控，非投資建議"
 
 # ===============================
 # Black Swan Levels
@@ -107,7 +107,12 @@ def run():
             requests.post(
                 BLACK_SWAN_WEBHOOK_URL,
                 json={
-                    "content": f"📊 **L4 黑天鵝結束**\n🕒 {now:%Y-%m-%d %H:%M}\n▶️ 系統進入觀察期"
+                    "content": (
+                        "📊 **L4 黑天鵝事件結束**\n"
+                        f"🕒 {now:%Y-%m-%d %H:%M}\n"
+                        "🟠 系統已進入風險觀察期\n\n"
+                        f"{DISCLAIMER}"
+                    )
                 },
                 timeout=15,
             )
@@ -121,7 +126,7 @@ def run():
             latest = df["date"].max()
             symbols += df[df["date"] == latest]["symbol"].tolist()
 
-    normal, black = [], []
+    black = []
 
     for s in set(symbols):
         news = get_news(s.split(".")[0])
@@ -156,10 +161,10 @@ def run():
                         BLACK_SWAN_WEBHOOK_URL,
                         json={
                             "content": (
-                                "🟡 **SYSTEM MODE：RISK WARNING (L3)**\n"
+                                "🟡 **SYSTEM MODE：風險警示（L3）**\n"
                                 f"🕒 {now:%Y-%m-%d %H:%M}\n"
-                                "⚠️ 偵測到高風險事件\n"
-                                "➡️ AI 將降速、不進行海選"
+                                "⚠️ 偵測到高風險事件，系統將降低進攻行為\n\n"
+                                f"{DISCLAIMER}"
                             )
                         },
                         timeout=15,
@@ -188,7 +193,10 @@ def run():
     if black and BLACK_SWAN_WEBHOOK_URL:
         requests.post(
             BLACK_SWAN_WEBHOOK_URL,
-            json={"content": "🚨 黑天鵝警報", "embeds": black[:10]},
+            json={
+                "content": f"🚨 **黑天鵝警報**\n\n{DISCLAIMER}",
+                "embeds": black[:10]
+            },
             timeout=15,
         )
 
