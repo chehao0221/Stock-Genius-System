@@ -67,7 +67,7 @@ def get_tw_300():
         codes = df["有價證券代號及名稱"].str.split("　").str[0]
         return [f"{c}.TW" for c in codes[codes.str.len() == 4].head(300)]
     except:
-        return ["2330.TW", "2317.TW", "2454.TW"]
+        return ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
 
 # ===============================
 # Backtest
