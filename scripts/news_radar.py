@@ -14,7 +14,6 @@ sys.path.append(BASE_DIR)
 # ===============================
 NEWS_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
 BLACK_SWAN_WEBHOOK_URL = os.getenv("BLACK_SWAN_WEBHOOK_URL", "").strip()
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
@@ -27,14 +26,17 @@ TZ = datetime.timezone(datetime.timedelta(hours=8))
 warnings.filterwarnings("ignore")
 
 # ===============================
-# Config
+# 🔧 Tunable Risk Policy（新增）
 # ===============================
 L4_TIME_WINDOW_HOURS = 6
 L4_TRIGGER_COUNT = 2
-L4_NEWS_PAUSE_HOURS = 24
-L3_COOLDOWN_HOURS = 6
+L4_BASE_PAUSE_HOURS = 24
 
-DISCLAIMER = "📌 提醒：僅為風險與市場監控，非投資建議"
+L4_COOLDOWN_HOURS = 12          # 🔒 L4 結束後冷卻期（防抖動）
+L4_EXIT_L3_THRESHOLD = 1        # 🔍 L4 結束前，最近 L3 次數門檻
+L4_EXIT_LOOKBACK_HOURS = 6
+
+DISCLAIMER = "📌 僅為風險與市場監控，非投資建議"
 
 # ===============================
 # Black Swan Levels
@@ -53,15 +55,19 @@ def get_black_swan_level(title: str) -> int:
     return 0
 
 # ===============================
-# Cache
+# Cache Helpers
 # ===============================
 def load_cache():
     if os.path.exists(CACHE_FILE):
         try:
             return json.load(open(CACHE_FILE, "r", encoding="utf-8"))
         except:
-            return {}
-    return {}
+            pass
+    return {
+        "_l3_events": [],
+        "_l4_pause_until": 0,
+        "_l4_recovered_at": 0
+    }
 
 def save_cache(c):
     json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"),
@@ -98,40 +104,43 @@ def get_news(q):
 def run():
     now = datetime.datetime.now(TZ)
     ts = now.timestamp()
-
     cache = load_cache()
-    cache.setdefault("_l3_events", [])
-    cache.setdefault("_l4_pause_until", 0)
-    cache.setdefault("_l4_recovered", False)
 
     # ===============================
-    # 🔁 L4 Auto Recover（只執行一次）
+    # 🔁 L4 Auto Recover（強化版）
     # ===============================
     if os.path.exists(L4_ACTIVE_FILE) and ts > cache["_l4_pause_until"]:
-        os.remove(L4_ACTIVE_FILE)
-        open(OBS_FLAG_FILE, "w").write(str(ts))
-        cache["_l4_recovered"] = True
+        recent_l3 = [
+            t for t in cache["_l3_events"]
+            if ts - t <= L4_EXIT_LOOKBACK_HOURS * 3600
+        ]
 
-        if BLACK_SWAN_WEBHOOK_URL:
-            requests.post(
-                BLACK_SWAN_WEBHOOK_URL,
-                json={
-                    "content": (
-                        "📊 **L4 黑天鵝事件結束**\n"
-                        f"🕒 {now:%Y-%m-%d %H:%M}\n"
-                        "🟠 系統已進入風險觀察期\n\n"
-                        f"{DISCLAIMER}"
-                    )
-                },
-                timeout=15,
-            )
+        if len(recent_l3) <= L4_EXIT_L3_THRESHOLD:
+            os.remove(L4_ACTIVE_FILE)
+            open(OBS_FLAG_FILE, "w").write(str(ts))
+            cache["_l4_recovered_at"] = ts
 
-        # 🔥 Auto hook：AI 表現回顧（你指定的最佳觸發點）
-        subprocess.run(["python", "scripts/l4_ai_performance_report.py"])
-        subprocess.run(["python", "scripts/l4_ai_performance_compare.py"])
+            if BLACK_SWAN_WEBHOOK_URL:
+                requests.post(
+                    BLACK_SWAN_WEBHOOK_URL,
+                    json={
+                        "content": (
+                            "📊 **L4 黑天鵝事件結束（風險降溫）**\n"
+                            f"🕒 {now:%Y-%m-%d %H:%M}\n\n"
+                            f"{DISCLAIMER}"
+                        )
+                    },
+                    timeout=15,
+                )
+
+            subprocess.run(["python", "scripts/l4_ai_performance_report.py"])
+            subprocess.run(["python", "scripts/l4_ai_performance_compare.py"])
+        else:
+            # 🔥 延長 L4
+            cache["_l4_pause_until"] += 12 * 3600
 
     # ===============================
-    # 今日 AI 監控標的
+    # 今日 AI 標的
     # ===============================
     symbols = []
     for f in ["tw_history.csv", "us_history.csv"]:
@@ -151,7 +160,9 @@ def run():
         level = get_black_swan_level(news["title"])
         final_level = level
 
-        # ===== L3 記錄 =====
+        # ===============================
+        # L3 記錄
+        # ===============================
         if level == 3:
             cache["_l3_events"].append(ts)
             cache["_l3_events"] = [
@@ -159,14 +170,26 @@ def run():
                 if ts - t <= L4_TIME_WINDOW_HOURS * 3600
             ]
 
-            # ===== 升級 L4 =====
-            if len(cache["_l3_events"]) >= L4_TRIGGER_COUNT:
-                final_level = 4
-                cache["_l4_pause_until"] = ts + L4_NEWS_PAUSE_HOURS * 3600
-                open(L4_ACTIVE_FILE, "w").write(str(ts))
-                cache["_l4_recovered"] = False
+            # ===============================
+            # L4 升級（含冷卻期）
+            # ===============================
+            in_cooldown = (
+                ts - cache.get("_l4_recovered_at", 0)
+                < L4_COOLDOWN_HOURS * 3600
+            )
 
-        # ===== Embed =====
+            if (
+                not os.path.exists(L4_ACTIVE_FILE)
+                and not in_cooldown
+                and len(cache["_l3_events"]) >= L4_TRIGGER_COUNT
+            ):
+                final_level = 4
+                cache["_l4_pause_until"] = ts + L4_BASE_PAUSE_HOURS * 3600
+                open(L4_ACTIVE_FILE, "w").write(str(ts))
+
+        # ===============================
+        # Discord Embed
+        # ===============================
         if final_level >= 3:
             black_embeds.append({
                 "title": f"{s} | 黑天鵝 L{final_level}",
@@ -179,7 +202,6 @@ def run():
                 }]
             })
 
-    # ===== Send =====
     if black_embeds and BLACK_SWAN_WEBHOOK_URL:
         requests.post(
             BLACK_SWAN_WEBHOOK_URL,
