@@ -8,42 +8,52 @@ from datetime import datetime
 import warnings
 
 # ===============================
-# 🔴 L4 ACTIVE CHECK（最優先）
-# ===============================
-L4_ACTIVE_FILE = os.getenv("L4_ACTIVE_FILE", "data/l4_active.flag")
-
-if os.path.exists(L4_ACTIVE_FILE):
-    print("🚨 L4 active detected — US AI analysis skipped")
-    sys.exit(0)
-
-# ===============================
-# Project Base / Data Directory
+# 🔴 L4 / Observation CHECK（最優先）
 # ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 確保可以 import 專案內模組（若有）
+L4_ACTIVE_FILE = os.getenv(
+    "L4_ACTIVE_FILE",
+    os.path.join(DATA_DIR, "l4_active.flag")
+)
+OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
+
+if os.path.exists(L4_ACTIVE_FILE):
+    print("🚨 L4 active detected — US AI analysis skipped")
+    sys.exit(0)
+
+def in_observation():
+    if not os.path.exists(OBS_FLAG_FILE):
+        return False
+    try:
+        last_end = float(open(OBS_FLAG_FILE).read().strip())
+        return (datetime.now().timestamp() - last_end) < 86400
+    except Exception:
+        return False
+
+OBSERVATION = in_observation()
+
+# ===============================
+# Environment / Path
+# ===============================
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-# =========================
-# 基本設定
-# =========================
 warnings.filterwarnings("ignore")
 
 HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # =========================
-# 工具函數
+# Utilities
 # =========================
 def calc_pivot(df):
     r = df.iloc[-20:]
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
     return round(2 * p - h, 2), round(2 * p - l, 2)
-
 
 def get_sp500():
     try:
@@ -55,7 +65,7 @@ def get_sp500():
         return ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
 
 # =========================
-# 5 日回測（實盤安全）
+# 5-Day Settle Report
 # =========================
 def get_settle_report():
     if not os.path.exists(HISTORY_FILE):
@@ -93,7 +103,7 @@ def get_settle_report():
     return report
 
 # =========================
-# 主程式
+# Main
 # =========================
 def run():
     mag_7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
@@ -145,20 +155,26 @@ def run():
             continue
 
     # =========================
-    # 組合訊息
+    # Message Compose
     # =========================
-    msg = f"📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
+    mode = "🟠 **SYSTEM MODE：L4 OBSERVATION**" if OBSERVATION else "🟢 **SYSTEM MODE：NORMAL**"
+    msg = f"{mode}\n\n📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
     msg += "------------------------------------------\n\n"
 
     medals = ["🥇", "🥈", "🥉", "📈", "📈"]
-    horses = {k: v for k, v in results.items() if k not in mag_7 and v["pred"] > 0}
-    top_5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
 
-    msg += "🏆 **AI 海選 Top 5 (潛力股)**\n"
-    for i, s in enumerate(top_5):
-        r = results[s]
-        msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
-        msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+    if not OBSERVATION:
+        horses = {k: v for k, v in results.items() if k not in mag_7 and v["pred"] > 0}
+        top_5 = sorted(horses, key=lambda x: horses[x]["pred"], reverse=True)[:5]
+
+        msg += "🏆 **AI 海選 Top 5 (潛力股)**\n"
+        for i, s in enumerate(top_5):
+            r = results[s]
+            msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
+            msg += f" └ 現價: `{r['price']:.2f}` (支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+    else:
+        top_5 = []
+        msg += "⚠️ 觀察期中，暫停海選潛力股\n\n"
 
     msg += "\n💎 **Magnificent 7 監控 (固定顯示)**\n"
     for s in mag_7:
@@ -176,7 +192,7 @@ def run():
         print(msg)
 
     # =========================
-    # 儲存回測資料
+    # Save History
     # =========================
     hist = [
         {
@@ -190,12 +206,13 @@ def run():
         if s in results
     ]
 
-    pd.DataFrame(hist).to_csv(
-        HISTORY_FILE,
-        mode="a",
-        header=not os.path.exists(HISTORY_FILE),
-        index=False,
-    )
+    if hist:
+        pd.DataFrame(hist).to_csv(
+            HISTORY_FILE,
+            mode="a",
+            header=not os.path.exists(HISTORY_FILE),
+            index=False,
+        )
 
 if __name__ == "__main__":
     run()
