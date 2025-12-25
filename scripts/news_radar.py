@@ -25,8 +25,9 @@ if BASE_DIR not in sys.path:
 warnings.filterwarnings("ignore")
 
 DISCORD_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
-CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
+BLACK_SWAN_WEBHOOK_URL = os.getenv("BLACK_SWAN_WEBHOOK_URL", "").strip()
 
+CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
 TZ_TW = datetime.timezone(datetime.timedelta(hours=8))
 
 # ===============================
@@ -151,11 +152,11 @@ def run():
     market_open = is_market_open(market)
 
     news_cache = load_cache()
-    embeds = []
-    has_black_swan = False  # ✅ 關鍵 flag
+    normal_embeds = []
+    black_swan_embeds = []
 
     # ===============================
-    # Watch List Decision
+    # Watch List
     # ===============================
     if market_open:
         symbols = get_today_ai_top(market)
@@ -172,63 +173,63 @@ def run():
     # News Loop
     # ===============================
     for sym in symbols:
-        try:
-            search_key = sym.split(".")[0]
-            news = get_live_news(search_key)
-            if not news:
-                continue
-
-            force_push = is_black_swan(news["title"])
-            if force_push:
-                has_black_swan = True  # ✅ 只在這裡判斷
-
-            if not force_push and news_cache.get(sym) == news["title"]:
-                continue
-
-            news_cache[sym] = news["title"]
-
-            embed = {
-                "title": f"{sym} | {label}",
-                "url": news["link"],
-                "color": 0xE74C3C if force_push else 0x3498DB,
-                "fields": [
-                    {
-                        "name": "📰 焦點新聞",
-                        "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
-                        "inline": False,
-                    }
-                ],
-                "footer": {
-                    "text": "🚨 黑天鵝警報"
-                    if force_push
-                    else "Quant Master News Radar"
-                },
-            }
-
-            embeds.append(embed)
-
-        except:
+        search_key = sym.split(".")[0]
+        news = get_live_news(search_key)
+        if not news:
             continue
 
-    if not embeds:
-        return
+        force_push = is_black_swan(news["title"])
+
+        if not force_push and news_cache.get(sym) == news["title"]:
+            continue
+
+        news_cache[sym] = news["title"]
+
+        embed = {
+            "title": f"{sym} | {label}",
+            "url": news["link"],
+            "color": 0xE74C3C if force_push else 0x3498DB,
+            "fields": [
+                {
+                    "name": "📰 焦點新聞",
+                    "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
+                    "inline": False,
+                }
+            ],
+            "footer": {
+                "text": "🚨 黑天鵝警報"
+                if force_push
+                else "Quant Master News Radar"
+            },
+        }
+
+        if force_push:
+            black_swan_embeds.append(embed)
+        else:
+            normal_embeds.append(embed)
 
     # ===============================
-    # Header Decision (FIXED)
+    # Push
     # ===============================
-    if has_black_swan:
-        header = "🚨 黑天鵝即時警報"
-    else:
-        header = title
+    if normal_embeds:
+        requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={
+                "content": f"### {title}\n📅 {now:%Y-%m-%d %H:%M}",
+                "embeds": normal_embeds[:10],
+            },
+            timeout=15,
+        )
 
-    requests.post(
-        DISCORD_WEBHOOK_URL,
-        json={
-            "content": f"### {header}\n📅 {now:%Y-%m-%d %H:%M}",
-            "embeds": embeds[:10],
-        },
-        timeout=15,
-    )
+    if black_swan_embeds and BLACK_SWAN_WEBHOOK_URL:
+        requests.post(
+            BLACK_SWAN_WEBHOOK_URL,
+            json={
+                "content": f"🚨🚨 **黑天鵝即時警報** 🚨🚨\n📅 {now:%Y-%m-%d %H:%M}",
+                "embeds": black_swan_embeds[:10],
+            },
+            timeout=15,
+        )
 
     save_cache(news_cache)
 
