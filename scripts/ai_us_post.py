@@ -19,6 +19,8 @@ L4_ACTIVE_FILE = os.getenv(
     os.path.join(DATA_DIR, "l4_active.flag")
 )
 OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
+OBS_END_NOTIFY_FILE = os.path.join(DATA_DIR, "l4_obs_notified.flag")
+OBS_DURATION_SECONDS = 24 * 3600
 
 if os.path.exists(L4_ACTIVE_FILE):
     print("🚨 L4 active detected — US AI analysis skipped")
@@ -29,7 +31,7 @@ def in_observation():
         return False
     try:
         last_end = float(open(OBS_FLAG_FILE).read().strip())
-        return (datetime.now().timestamp() - last_end) < 86400
+        return (datetime.now().timestamp() - last_end) < OBS_DURATION_SECONDS
     except Exception:
         return False
 
@@ -45,6 +47,37 @@ warnings.filterwarnings("ignore")
 
 HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+
+# =========================
+# 🔔 Observation End Notify
+# =========================
+if os.path.exists(OBS_FLAG_FILE) and not OBSERVATION:
+    try:
+        last_end = float(open(OBS_FLAG_FILE).read().strip())
+        now_ts = datetime.now().timestamp()
+
+        if (
+            now_ts - last_end >= OBS_DURATION_SECONDS
+            and not os.path.exists(OBS_END_NOTIFY_FILE)
+        ):
+            if WEBHOOK_URL:
+                requests.post(
+                    WEBHOOK_URL,
+                    json={
+                        "content": (
+                            "🟢 **SYSTEM MODE：NORMAL**\n\n"
+                            "🔔 **L4 觀察期已結束**\n"
+                            "美股 AI 模型已恢復正常運作（Top 5 / Magnificent 7 全部啟用）"
+                        )
+                    },
+                    timeout=10,
+                )
+
+            with open(OBS_END_NOTIFY_FILE, "w") as f:
+                f.write(str(now_ts))
+
+    except Exception as e:
+        print("Observation notify error:", e)
 
 # =========================
 # Utilities
