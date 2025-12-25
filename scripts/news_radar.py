@@ -101,13 +101,17 @@ def run():
     cache.setdefault("_l3_events", [])
     cache.setdefault("_l4_pause_until", 0)
 
-    # ===============================
-    # 🔁 L4 Auto Recover
-    # ===============================
+    # ==================================================
+    # 🔁 L4 AUTO RECOVER（★ 最關鍵：事件閉環）
+    # ==================================================
     if os.path.exists(L4_ACTIVE_FILE) and ts > cache["_l4_pause_until"]:
+        # 1️⃣ 關閉 L4
         os.remove(L4_ACTIVE_FILE)
+
+        # 2️⃣ 進入 Observation
         open(OBS_FLAG_FILE, "w").write(str(ts))
 
+        # 3️⃣ Discord 通知
         if BLACK_SWAN_WEBHOOK_URL:
             requests.post(
                 BLACK_SWAN_WEBHOOK_URL,
@@ -121,6 +125,9 @@ def run():
                 },
                 timeout=15,
             )
+
+        # 4️⃣ 🔥 自動產出 AI 回顧報告（只跑一次）
+        os.system("python scripts/l4_ai_performance_report.py")
 
     # ===============================
     # 今日 AI 監控標的
