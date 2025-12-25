@@ -19,9 +19,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-# ===============================
-# Basic Settings
-# ===============================
 warnings.filterwarnings("ignore")
 
 DISCORD_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
@@ -46,17 +43,28 @@ def is_market_open(market: str) -> bool:
         return False
 
 # ===============================
-# Black Swan
+# Black Swan Definition
 # ===============================
-BLACK_SWAN_KEYWORDS = [
-    "破產", "違約", "下市", "調查", "制裁",
-    "停產", "爆炸", "裁員", "倒閉",
-    "SEC", "lawsuit", "bankruptcy", "halt"
-]
+BLACK_SWAN_LEVELS = {
+    3: ["破產", "下市", "bankruptcy", "delist", "halt"],
+    2: ["制裁", "違約", "lawsuit", "SEC", "sanction"],
+    1: ["裁員", "停產", "調查", "縮減"]
+}
 
-def is_black_swan(title: str) -> bool:
+def get_black_swan_level(title: str) -> int:
     t = title.lower()
-    return any(k.lower() in t for k in BLACK_SWAN_KEYWORDS)
+    for level, keywords in BLACK_SWAN_LEVELS.items():
+        for k in keywords:
+            if k.lower() in t:
+                return level
+    return 0
+
+def detect_market_impact(symbol: str) -> str:
+    if symbol.endswith(".TW"):
+        return "🇹🇼 台股"
+    if symbol.isupper():
+        return "🇺🇸 美股"
+    return "🌍 全球"
 
 # ===============================
 # News
@@ -77,9 +85,8 @@ def get_live_news(query):
             *entry.published_parsed[:6],
             tzinfo=datetime.timezone.utc
         )
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
 
-        if (now_utc - pub_time).total_seconds() / 3600 > 12:
+        if (datetime.datetime.now(datetime.timezone.utc) - pub_time).total_seconds() > 43200:
             return None
 
         return {
@@ -132,9 +139,6 @@ def get_all_ai_history(market="TW"):
     df = pd.read_csv(path)
     return sorted(df["symbol"].unique().tolist())
 
-# ===============================
-# Fixed Watch
-# ===============================
 FIXED_WATCH = {
     "TW": ["2330.TW", "2317.TW", "2454.TW"],
     "US": ["NVDA", "AAPL", "MSFT", "TSLA"],
@@ -151,87 +155,59 @@ def run():
     market = "TW" if now.hour < 12 else "US"
     market_open = is_market_open(market)
 
-    news_cache = load_cache()
-    normal_embeds = []
-    black_swan_embeds = []
+    cache = load_cache()
+    normal, black = [], []
 
-    # ===============================
-    # Watch List
-    # ===============================
-    if market_open:
-        symbols = get_today_ai_top(market)
-        label = "AI 海選強勢股"
-        title = "📈 AI 交易日雷達"
-    else:
-        symbols = sorted(
-            set(get_all_ai_history(market) + FIXED_WATCH.get(market, []))
-        )
-        label = "假日關注股"
-        title = "🟡 假日市場觀察"
+    symbols = (
+        get_today_ai_top(market)
+        if market_open
+        else sorted(set(get_all_ai_history(market) + FIXED_WATCH.get(market, [])))
+    )
 
-    # ===============================
-    # News Loop
-    # ===============================
     for sym in symbols:
-        search_key = sym.split(".")[0]
-        news = get_live_news(search_key)
+        news = get_live_news(sym.split(".")[0])
         if not news:
             continue
 
-        force_push = is_black_swan(news["title"])
+        level = get_black_swan_level(news["title"])
+        impact = detect_market_impact(sym)
 
-        if not force_push and news_cache.get(sym) == news["title"]:
+        if level == 0 and cache.get(sym) == news["title"]:
             continue
 
-        news_cache[sym] = news["title"]
+        cache[sym] = news["title"]
 
         embed = {
-            "title": f"{sym} | {label}",
+            "title": f"{sym} | {impact}",
             "url": news["link"],
-            "color": 0xE74C3C if force_push else 0x3498DB,
+            "color": 0xE74C3C if level >= 2 else 0xF1C40F,
             "fields": [
                 {
-                    "name": "📰 焦點新聞",
+                    "name": f"🚨 黑天鵝等級 L{level}" if level else "📰 焦點新聞",
                     "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
                     "inline": False,
                 }
             ],
-            "footer": {
-                "text": "🚨 黑天鵝警報"
-                if force_push
-                else "Quant Master News Radar"
-            },
         }
 
-        if force_push:
-            black_swan_embeds.append(embed)
-        else:
-            normal_embeds.append(embed)
+        (black if level else normal).append(embed)
 
-    # ===============================
-    # Push
-    # ===============================
-    if normal_embeds:
+    if normal:
         requests.post(
             DISCORD_WEBHOOK_URL,
-            json={
-                "content": f"### {title}\n📅 {now:%Y-%m-%d %H:%M}",
-                "embeds": normal_embeds[:10],
-            },
-            timeout=15,
+            json={"content": f"### 市場新聞\n📅 {now:%Y-%m-%d %H:%M}", "embeds": normal[:10]},
         )
 
-    if black_swan_embeds and BLACK_SWAN_WEBHOOK_URL:
+    if black and BLACK_SWAN_WEBHOOK_URL:
         requests.post(
             BLACK_SWAN_WEBHOOK_URL,
             json={
-                "content": f"🚨🚨 **黑天鵝即時警報** 🚨🚨\n📅 {now:%Y-%m-%d %H:%M}",
-                "embeds": black_swan_embeds[:10],
+                "content": f"🚨🚨 黑天鵝警報 🚨🚨\n📅 {now:%Y-%m-%d %H:%M}",
+                "embeds": black[:10],
             },
-            timeout=15,
         )
 
-    save_cache(news_cache)
+    save_cache(cache)
 
 if __name__ == "__main__":
     run()
