@@ -1,6 +1,5 @@
 import os, sys, json, csv, warnings, datetime, requests, feedparser, urllib.parse
 import pandas as pd
-import yfinance as yf
 
 # ===============================
 # Base / Paths
@@ -11,15 +10,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 sys.path.append(BASE_DIR)
 
 # ===============================
-# Environment
+# Env
 # ===============================
 NEWS_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
 BLACK_SWAN_WEBHOOK_URL = os.getenv("BLACK_SWAN_WEBHOOK_URL", "").strip()
+
 L4_ACTIVE_FILE = os.getenv("L4_ACTIVE_FILE", os.path.join(DATA_DIR, "l4_active.flag"))
 OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
 
 CACHE_FILE = os.path.join(DATA_DIR, "news_cache.json")
 BLACK_SWAN_CSV = os.path.join(DATA_DIR, "black_swan_history.csv")
+STATE_LOG_CSV = os.path.join(DATA_DIR, "system_state_log.csv")
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))
 warnings.filterwarnings("ignore")
@@ -30,6 +31,7 @@ warnings.filterwarnings("ignore")
 L4_TIME_WINDOW_HOURS = 6
 L4_TRIGGER_COUNT = 2
 L4_NEWS_PAUSE_HOURS = 24
+OBSERVATION_HOURS = 24
 
 BLACK_SWAN_LEVELS = {
     3: ["破產", "下市", "bankruptcy", "delist", "halt"],
@@ -40,12 +42,16 @@ BLACK_SWAN_LEVELS = {
 # ===============================
 # Utils
 # ===============================
-def get_black_swan_level(title: str) -> int:
-    t = title.lower()
-    for lv, keys in BLACK_SWAN_LEVELS.items():
-        if any(k.lower() in t for k in keys):
-            return lv
-    return 0
+def log_state(state, note=""):
+    exists = os.path.exists(STATE_LOG_CSV)
+    with open(STATE_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if not exists:
+            w.writerow(["datetime", "state", "note"])
+        w.writerow([
+            datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M"),
+            state, note
+        ])
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -58,10 +64,17 @@ def load_cache():
 def save_cache(c):
     json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
-def get_news(query):
+def get_black_swan_level(title):
+    t = title.lower()
+    for lv, keys in BLACK_SWAN_LEVELS.items():
+        if any(k.lower() in t for k in keys):
+            return lv
+    return 0
+
+def get_news(q):
     url = (
         "https://news.google.com/rss/search?"
-        f"q={urllib.parse.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-TW"
+        f"q={urllib.parse.quote(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-TW"
     )
     feed = feedparser.parse(url)
     if not feed.entries:
@@ -75,17 +88,6 @@ def get_news(query):
             tzinfo=datetime.timezone.utc
         ).astimezone(TZ).strftime("%H:%M")
     }
-
-def log_black_swan(level, symbol, title, link):
-    exists = os.path.exists(BLACK_SWAN_CSV)
-    with open(BLACK_SWAN_CSV, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if not exists:
-            w.writerow(["datetime", "level", "symbol", "title", "link"])
-        w.writerow([
-            datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M"),
-            level, symbol, title, link
-        ])
 
 def get_today_symbols():
     syms = []
@@ -106,105 +108,75 @@ def run():
 
     cache = load_cache()
     cache.setdefault("_l3_events", [])
+    cache.setdefault("_l4_start", None)
     cache.setdefault("_l4_pause_until", 0)
+    cache.setdefault("_l4_symbols", [])
 
-    # ===========================
-    # 🔔 L4 Auto Recovery
-    # ===========================
+    # 🔁 L4 → OBSERVATION
     if os.path.exists(L4_ACTIVE_FILE) and ts > cache["_l4_pause_until"]:
         os.remove(L4_ACTIVE_FILE)
         open(OBS_FLAG_FILE, "w").write(str(ts))
+        log_state("L4_END", "auto recover to observation")
 
+        # 📊 L4 Timeline Report
         if BLACK_SWAN_WEBHOOK_URL:
+            duration = int((ts - cache["_l4_start"]) / 60) if cache["_l4_start"] else "?"
+            symbols = ", ".join(set(cache["_l4_symbols"]))
+
             requests.post(
                 BLACK_SWAN_WEBHOOK_URL,
                 json={
                     "content": (
-                        "📊 **L4 黑天鵝事件結束回顧**\n"
-                        f"🕒 {now:%Y-%m-%d %H:%M}\n"
-                        "🟠 SYSTEM MODE：OBSERVATION\n"
-                        "▶️ AI 已恢復，但暫停激進推薦"
+                        "📊 **L4 黑天鵝事件時間線回顧**\n"
+                        f"🕒 開始：{datetime.datetime.fromtimestamp(cache['_l4_start'], TZ):%Y-%m-%d %H:%M}\n"
+                        f"🕒 結束：{now:%Y-%m-%d %H:%M}\n"
+                        f"⏱ 持續：約 {duration} 分鐘\n"
+                        f"🎯 相關標的：{symbols}\n\n"
+                        "🟠 SYSTEM MODE：OBSERVATION"
                     )
                 },
                 timeout=15,
             )
 
-    # ===========================
-    # SYSTEM MODE
-    # ===========================
-    if os.path.exists(L4_ACTIVE_FILE):
-        system_mode = "🔴 SYSTEM MODE：L4 ACTIVE"
-    elif os.path.exists(OBS_FLAG_FILE) and ts - float(open(OBS_FLAG_FILE).read()) < 86400:
-        system_mode = "🟠 SYSTEM MODE：OBSERVATION"
-    else:
-        system_mode = "🟢 SYSTEM MODE：NORMAL"
+        cache["_l4_start"] = None
+        cache["_l4_symbols"] = []
+
+    # 🔔 OBSERVATION → NORMAL
+    if os.path.exists(OBS_FLAG_FILE):
+        last_end = float(open(OBS_FLAG_FILE).read())
+        if ts - last_end > OBSERVATION_HOURS * 3600:
+            os.remove(OBS_FLAG_FILE)
+            log_state("OBS_END", "back to normal")
+
+            if NEWS_WEBHOOK_URL:
+                requests.post(
+                    NEWS_WEBHOOK_URL,
+                    json={"content": "🟢 **SYSTEM MODE：NORMAL**\nAI 分析與海選已全面恢復"},
+                    timeout=15,
+                )
 
     symbols = get_today_symbols()
-    normal, black = [], []
-
     for s in symbols:
         n = get_news(s.split(".")[0])
         if not n:
             continue
 
         lv = get_black_swan_level(n["title"])
-        final = lv
-
         if lv == 3:
             cache["_l3_events"].append(ts)
             cache["_l3_events"] = [
                 t for t in cache["_l3_events"]
                 if ts - t <= L4_TIME_WINDOW_HOURS * 3600
             ]
-            if len(cache["_l3_events"]) >= L4_TRIGGER_COUNT:
-                final = 4
-                cache["_l4_pause_until"] = ts + L4_NEWS_PAUSE_HOURS * 3600
+
+            if len(cache["_l3_events"]) >= L4_TRIGGER_COUNT and not os.path.exists(L4_ACTIVE_FILE):
                 open(L4_ACTIVE_FILE, "w").write(str(ts))
+                cache["_l4_start"] = ts
+                cache["_l4_pause_until"] = ts + L4_NEWS_PAUSE_HOURS * 3600
+                log_state("L4_START", "triggered by L3 burst")
 
-        if final >= 3:
-            black.append({
-                "title": f"{s} | 黑天鵝 L{final}",
-                "url": n["link"],
-                "color": 0x8E0000,
-                "fields": [{
-                    "name": f"🚨 黑天鵝 L{final}",
-                    "value": f"[{n['title']}]({n['link']})\n🕒 {n['time']}",
-                    "inline": False
-                }]
-            })
-            log_black_swan(final, s, n["title"], n["link"])
-
-        elif ts > cache["_l4_pause_until"]:
-            normal.append({
-                "title": f"{s} | 市場新聞",
-                "url": n["link"],
-                "color": 0x3498DB,
-                "fields": [{
-                    "name": "📰 市場新聞",
-                    "value": f"[{n['title']}]({n['link']})\n🕒 {n['time']}",
-                    "inline": False
-                }]
-            })
-
-    if normal and NEWS_WEBHOOK_URL:
-        requests.post(
-            NEWS_WEBHOOK_URL,
-            json={
-                "content": f"{system_mode}\n📅 {now:%Y-%m-%d %H:%M}",
-                "embeds": normal[:10],
-            },
-            timeout=15,
-        )
-
-    if black and BLACK_SWAN_WEBHOOK_URL:
-        requests.post(
-            BLACK_SWAN_WEBHOOK_URL,
-            json={
-                "content": f"{system_mode}\n🚨 黑天鵝警報",
-                "embeds": black[:10],
-            },
-            timeout=15,
-        )
+        if lv >= 3:
+            cache["_l4_symbols"].append(s)
 
     save_cache(cache)
 
