@@ -36,9 +36,8 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
-          TZ: Asia/Taipei # 重要：設定環境為台北時區
+          TZ: Asia/Taipei # 強制使用台北時區
         run: |
-          # 取得台北時間的小時、分鐘、星期
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
           DAY_OF_WEEK=$(date +%u)
@@ -46,7 +45,7 @@ jobs:
           echo "目前執行時間 (台北): $HOUR:$MINUTE, 星期: $DAY_OF_WEEK"
 
           # --- 任務 1：新聞雷達 (整點執行) ---
-          # 由於 Cron 可能有延遲，判定前 10 分鐘內觸發都算
+          # 修正：放寬分鐘判定至前 10 分鐘，避免 GitHub 延遲啟動導致失效
           if [ "$MINUTE" -le "10" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             echo "🚀 執行新聞雷達任務..."
             python scripts/news_radar.py
@@ -58,13 +57,12 @@ jobs:
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            # 平日 (週一至週五) 執行 AI 分析
             if [ "$DAY_OF_WEEK" -le 5 ]; then
-              # 台股 15:30 (允許 15:30~15:40 間執行)
+              # 台股 15:30 (允許 15:30~15:40 執行)
               if [ "$HOUR" == "15" ] && [ "$MINUTE" -ge "30" ] && [ "$MINUTE" -le "40" ]; then
                 echo "📈 執行台股 AI 分析報告..."
                 python scripts/ai_tw_post.py
-              # 美股 06:00 (允許 06:00~06:10 間執行)
+              # 美股 06:00 (允許 06:00~06:10 執行)
               elif [ "$HOUR" == "06" ] && [ "$MINUTE" -le "10" ]; then
                 echo "📈 執行美股 AI 分析報告..."
                 python scripts/ai_us_post.py
@@ -73,20 +71,20 @@ jobs:
           fi
 
       - name: Auto Sync Data back to GitHub
-        if: always() # 確保即使腳本報錯也會嘗試保存已更新的快取
+        if: always() # 即使執行出錯也嘗試保存現有的緩存檔案
         run: |
           git config --local user.name "Quant-Master-Bot"
           git config --local user.email "actions@github.com"
           
-          # 同步最新遠端狀態，防止多人或多任務衝突
+          # 防止 Push 衝突：先拉取並合併遠端變更
           git pull --rebase --autostash origin main
           
-          # 加入所有變動過的資料檔
+          # 確保 data 目錄內的所有變更都被追蹤
           git add data/*.csv data/*.json data/*.txt || true
           
           if ! git diff --cached --quiet; then
             git commit -m "Auto-update: Market Data & News Cache [skip ci]"
             git push origin main
           else
-            echo "無任何數據變動，跳過提交。"
+            echo "無數據更新，跳過提交。"
           fi
