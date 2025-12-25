@@ -1,15 +1,18 @@
 import os, sys, json, csv, warnings, datetime, requests, feedparser, urllib.parse
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 
 # ===============================
-# Base / Env
+# Base / Paths
 # ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 sys.path.append(BASE_DIR)
 
+# ===============================
+# Environment
+# ===============================
 NEWS_WEBHOOK_URL = os.getenv("NEWS_WEBHOOK_URL", "").strip()
 BLACK_SWAN_WEBHOOK_URL = os.getenv("BLACK_SWAN_WEBHOOK_URL", "").strip()
 L4_ACTIVE_FILE = os.getenv("L4_ACTIVE_FILE", os.path.join(DATA_DIR, "l4_active.flag"))
@@ -27,7 +30,6 @@ warnings.filterwarnings("ignore")
 L4_TIME_WINDOW_HOURS = 6
 L4_TRIGGER_COUNT = 2
 L4_NEWS_PAUSE_HOURS = 24
-OBSERVATION_HOURS = 24
 
 BLACK_SWAN_LEVELS = {
     3: ["破產", "下市", "bankruptcy", "delist", "halt"],
@@ -36,31 +38,31 @@ BLACK_SWAN_LEVELS = {
 }
 
 # ===============================
-# Helpers
+# Utils
 # ===============================
-def now():
-    return datetime.datetime.now(TZ)
-
-def ts():
-    return now().timestamp()
-
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        return json.load(open(CACHE_FILE, encoding="utf-8"))
-    return {}
-
-def save_cache(c):
-    json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-
-def get_black_swan_level(title):
+def get_black_swan_level(title: str) -> int:
     t = title.lower()
     for lv, keys in BLACK_SWAN_LEVELS.items():
         if any(k.lower() in t for k in keys):
             return lv
     return 0
 
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            return json.load(open(CACHE_FILE, "r", encoding="utf-8"))
+        except:
+            pass
+    return {}
+
+def save_cache(c):
+    json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+
 def get_news(query):
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-TW"
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={urllib.parse.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-TW"
+    )
     feed = feedparser.parse(url)
     if not feed.entries:
         return None
@@ -68,7 +70,10 @@ def get_news(query):
     return {
         "title": e.title.split(" - ")[0],
         "link": e.link,
-        "time": datetime.datetime(*e.published_parsed[:6], tzinfo=datetime.timezone.utc).astimezone(TZ).strftime("%H:%M")
+        "time": datetime.datetime(
+            *e.published_parsed[:6],
+            tzinfo=datetime.timezone.utc
+        ).astimezone(TZ).strftime("%H:%M")
     }
 
 def log_black_swan(level, symbol, title, link):
@@ -77,119 +82,129 @@ def log_black_swan(level, symbol, title, link):
         w = csv.writer(f)
         if not exists:
             w.writerow(["datetime", "level", "symbol", "title", "link"])
-        w.writerow([now().strftime("%Y-%m-%d %H:%M"), level, symbol, title, link])
+        w.writerow([
+            datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M"),
+            level, symbol, title, link
+        ])
 
-def in_observation():
-    if not os.path.exists(OBS_FLAG_FILE):
-        return False
-    try:
-        return (ts() - float(open(OBS_FLAG_FILE).read())) < OBSERVATION_HOURS * 3600
-    except:
-        return False
+def get_today_symbols():
+    syms = []
+    for f in ["tw_history.csv", "us_history.csv"]:
+        p = os.path.join(DATA_DIR, f)
+        if os.path.exists(p):
+            df = pd.read_csv(p)
+            latest = df["date"].max()
+            syms += df[df["date"] == latest]["symbol"].tolist()
+    return list(set(syms))
 
 # ===============================
 # Main
 # ===============================
 def run():
+    now = datetime.datetime.now(TZ)
+    ts = now.timestamp()
+
     cache = load_cache()
-    cache.setdefault("_l3_ts", [])
-    cache.setdefault("_l4_until", 0)
-    cache.setdefault("_l4_events", [])
+    cache.setdefault("_l3_events", [])
+    cache.setdefault("_l4_pause_until", 0)
 
-    current_ts = ts()
-    mode = "🟢 NORMAL"
-    if os.path.exists(L4_ACTIVE_FILE):
-        mode = "🔴 L4 ACTIVE"
-    elif in_observation():
-        mode = "🟠 OBSERVATION"
-
-    # 🔁 L4 auto recover
-    if os.path.exists(L4_ACTIVE_FILE) and current_ts > cache["_l4_until"]:
+    # ===========================
+    # 🔔 L4 Auto Recovery
+    # ===========================
+    if os.path.exists(L4_ACTIVE_FILE) and ts > cache["_l4_pause_until"]:
         os.remove(L4_ACTIVE_FILE)
-        open(OBS_FLAG_FILE, "w").write(str(current_ts))
-
-        # 📊 Post-Mortem
-        summary = "\n".join(
-            f"• {e['symbol']}｜{e['title']}"
-            for e in cache["_l4_events"]
-        ) or "（無事件）"
+        open(OBS_FLAG_FILE, "w").write(str(ts))
 
         if BLACK_SWAN_WEBHOOK_URL:
-            requests.post(BLACK_SWAN_WEBHOOK_URL, json={
-                "content":
-                f"📊 **L4 黑天鵝結束回顧**\n"
-                f"🕒 {now():%Y-%m-%d %H:%M}\n\n"
-                f"{summary}\n\n"
-                f"➡️ 系統進入 OBSERVATION"
-            })
+            requests.post(
+                BLACK_SWAN_WEBHOOK_URL,
+                json={
+                    "content": (
+                        "📊 **L4 黑天鵝事件結束回顧**\n"
+                        f"🕒 {now:%Y-%m-%d %H:%M}\n"
+                        "🟠 SYSTEM MODE：OBSERVATION\n"
+                        "▶️ AI 已恢復，但暫停激進推薦"
+                    )
+                },
+                timeout=15,
+            )
 
-        cache["_l4_events"] = []
+    # ===========================
+    # SYSTEM MODE
+    # ===========================
+    if os.path.exists(L4_ACTIVE_FILE):
+        system_mode = "🔴 SYSTEM MODE：L4 ACTIVE"
+    elif os.path.exists(OBS_FLAG_FILE) and ts - float(open(OBS_FLAG_FILE).read()) < 86400:
+        system_mode = "🟠 SYSTEM MODE：OBSERVATION"
+    else:
+        system_mode = "🟢 SYSTEM MODE：NORMAL"
 
-    # 讀取 AI 最新標的
-    symbols = []
-    for f in ["tw_history.csv", "us_history.csv"]:
-        p = os.path.join(DATA_DIR, f)
-        if os.path.exists(p):
-            df = pd.read_csv(p)
-            symbols += df[df["date"] == df["date"].max()]["symbol"].tolist()
-
+    symbols = get_today_symbols()
     normal, black = [], []
 
-    for s in set(symbols):
-        news = get_news(s.split(".")[0])
-        if not news:
+    for s in symbols:
+        n = get_news(s.split(".")[0])
+        if not n:
             continue
 
-        level = get_black_swan_level(news["title"])
-        final = level
+        lv = get_black_swan_level(n["title"])
+        final = lv
 
-        if level == 3:
-            cache["_l3_ts"].append(current_ts)
-            cache["_l3_ts"] = [t for t in cache["_l3_ts"] if current_ts - t <= L4_TIME_WINDOW_HOURS * 3600]
-
-            if len(cache["_l3_ts"]) >= L4_TRIGGER_COUNT:
+        if lv == 3:
+            cache["_l3_events"].append(ts)
+            cache["_l3_events"] = [
+                t for t in cache["_l3_events"]
+                if ts - t <= L4_TIME_WINDOW_HOURS * 3600
+            ]
+            if len(cache["_l3_events"]) >= L4_TRIGGER_COUNT:
                 final = 4
-                cache["_l4_until"] = current_ts + L4_NEWS_PAUSE_HOURS * 3600
-                open(L4_ACTIVE_FILE, "w").write(str(current_ts))
+                cache["_l4_pause_until"] = ts + L4_NEWS_PAUSE_HOURS * 3600
+                open(L4_ACTIVE_FILE, "w").write(str(ts))
 
         if final >= 3:
-            cache["_l4_events"].append({"symbol": s, "title": news["title"]})
-            log_black_swan(final, s, news["title"], news["link"])
-
             black.append({
                 "title": f"{s} | 黑天鵝 L{final}",
-                "url": news["link"],
+                "url": n["link"],
                 "color": 0x8E0000,
                 "fields": [{
                     "name": f"🚨 黑天鵝 L{final}",
-                    "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
+                    "value": f"[{n['title']}]({n['link']})\n🕒 {n['time']}",
                     "inline": False
                 }]
             })
+            log_black_swan(final, s, n["title"], n["link"])
 
-        elif current_ts > cache["_l4_until"]:
+        elif ts > cache["_l4_pause_until"]:
             normal.append({
                 "title": f"{s} | 市場新聞",
-                "url": news["link"],
+                "url": n["link"],
                 "color": 0x3498DB,
                 "fields": [{
-                    "name": "📰 新聞",
-                    "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
+                    "name": "📰 市場新聞",
+                    "value": f"[{n['title']}]({n['link']})\n🕒 {n['time']}",
                     "inline": False
                 }]
             })
 
     if normal and NEWS_WEBHOOK_URL:
-        requests.post(NEWS_WEBHOOK_URL, json={
-            "content": f"{mode}｜📰 市場新聞 {now():%H:%M}",
-            "embeds": normal[:10]
-        })
+        requests.post(
+            NEWS_WEBHOOK_URL,
+            json={
+                "content": f"{system_mode}\n📅 {now:%Y-%m-%d %H:%M}",
+                "embeds": normal[:10],
+            },
+            timeout=15,
+        )
 
     if black and BLACK_SWAN_WEBHOOK_URL:
-        requests.post(BLACK_SWAN_WEBHOOK_URL, json={
-            "content": f"{mode}｜🚨 黑天鵝警報",
-            "embeds": black[:10]
-        })
+        requests.post(
+            BLACK_SWAN_WEBHOOK_URL,
+            json={
+                "content": f"{system_mode}\n🚨 黑天鵝警報",
+                "embeds": black[:10],
+            },
+            timeout=15,
+        )
 
     save_cache(cache)
 
