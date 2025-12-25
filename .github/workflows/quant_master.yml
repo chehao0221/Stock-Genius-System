@@ -2,15 +2,8 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 每小時整點執行 (台北時間各整點)
+    # 每天每個整點跑一次，確保新聞不漏接（包含假日）
     - cron: '0 * * * *'
-    # 2. 額外增加：台股開盤前關鍵消息 (台北 08:30 -> UTC 00:30)
-    - cron: '30 00 * * 1-5'
-    # 3. 台股盤後 AI 分析 (台北 15:30) -> UTC 07:30
-    - cron: '30 07 * * 1-5'
-    # 4. 美股盤後 AI 分析 (台北 06:00) -> UTC 22:00
-    - cron: '00 22 * * 1-5'
-
   workflow_dispatch:
 
 jobs:
@@ -22,8 +15,6 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,36 +30,15 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
         run: |
-          # 強制設定時區並獲取時間
-          export TZ="Asia/Taipei"
+          # 1. 執行新聞雷達 (不論是否開盤，每個整點都檢查新聞)
+          python scripts/news_radar.py
+
+          # 2. 在指定時間執行 AI 預測 (Python 內部會判斷是否開盤)
           HOUR=$(date +%H)
-          MINUTE=$(date +%M)
-          DAY_OF_WEEK=$(date +%u)
-
-          echo "目前執行時間 (台北): $HOUR:$MINUTE, 星期: $DAY_OF_WEEK"
-
-          # --- 任務 1：新聞雷達 ---
-          # 只要是整點 (0~10分) 或 台北 08:30 (30~40分) 或者是手動執行，就啟動雷達
-          if [ "$MINUTE" -le "10" ] || ([ "$HOUR" == "08" ] && [ "$MINUTE" -ge "30" ] && [ "$MINUTE" -le "40" ]) || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "🚀 執行新聞雷達 (含個股偵測與報價)..."
-            python scripts/news_radar.py
-          fi
-
-          # --- 任務 2：AI 分析 (只有平日跑) ---
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "🛠️ 手動觸發：執行 AI 預測報告..."
+          if [ "$HOUR" == "07" ]; then # 台北 15:00 盤後分析
             python scripts/ai_tw_post.py
+          elif [ "$HOUR" == "22" ]; then # 台北 06:00 美股收盤分析
             python scripts/ai_us_post.py
-          else
-            if [ "$DAY_OF_WEEK" -le 5 ]; then
-              # 台股盤後報告
-              if [ "$HOUR" == "15" ] && [ "$MINUTE" -ge "30" ] && [ "$MINUTE" -le "40" ]; then
-                python scripts/ai_tw_post.py
-              # 美股收盤報告
-              elif [ "$HOUR" == "06" ] && [ "$MINUTE" -le "10" ]; then
-                python scripts/ai_us_post.py
-              fi
-            fi
           fi
 
       - name: Auto Sync Data back to GitHub
@@ -76,14 +46,6 @@ jobs:
         run: |
           git config --local user.name "Quant-Master-Bot"
           git config --local user.email "actions@github.com"
-          git add data/*.csv data/*.json data/*.txt || true
-          
-          # 拉取最新變更，避免與其他並行任務衝突
-          git pull --rebase --autostash origin main
-          
-          if ! git diff --cached --quiet; then
-            git commit -m "Auto-update: Market Data & News Cache [skip ci]"
-            git push origin main
-          else
-            echo "無數據更新，跳過提交。"
-          fi
+          git add data/*.csv data/news_cache.txt || true
+          git commit -m "Auto sync: news & analytics [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed"
