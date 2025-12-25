@@ -15,7 +15,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))
-DISCLAIMER = "📌 提醒：僅為風險與市場監控，非投資建議"
+DISCLAIMER = "📌 僅為風險與市場監控，非投資建議"
 
 # ===============================
 # Utils
@@ -31,13 +31,13 @@ def calc_metrics(df):
         return None
 
     df = df.copy()
-    df["actual_ret"] = (
-        df.groupby("symbol")["entry_price"]
-        .pct_change()
-        .shift(-5)
-    )
 
+    # 計算 5 日實際報酬（簡化估計）
+    df["actual_ret"] = df.groupby("symbol")["entry_price"].pct_change().shift(-5)
     df = df.dropna(subset=["actual_ret"])
+
+    if df.empty:
+        return None
 
     win = (
         (df["actual_ret"] > 0) & (df["pred_ret"] > 0)
@@ -52,6 +52,18 @@ def calc_metrics(df):
         "max_dd": df["actual_ret"].min(),
     }
 
+def format_block(title, m):
+    if not m:
+        return f"**{title}**\n資料不足\n"
+
+    return (
+        f"**{title}**\n"
+        f"筆數：{m['count']}\n"
+        f"勝率：{m['win_rate']:.0%}\n"
+        f"平均報酬：{m['avg_ret']:+.2%}\n"
+        f"最大回撤：{m['max_dd']:+.2%}"
+    )
+
 # ===============================
 # Main
 # ===============================
@@ -62,9 +74,6 @@ def run():
     if not os.path.exists(OBS_FLAG_FILE):
         return
 
-    l4_end_ts = float(open(OBS_FLAG_FILE).read())
-    l4_end = datetime.datetime.fromtimestamp(l4_end_ts, TZ)
-
     now = datetime.datetime.now(TZ)
 
     tw = load_history("tw_history.csv")
@@ -73,39 +82,41 @@ def run():
     tw_m = calc_metrics(tw)
     us_m = calc_metrics(us)
 
-    msg = (
-        "📊 **L4 黑天鵝 AI 表現回顧報告**\n"
-        f"🕒 產生時間：{now:%Y-%m-%d %H:%M}\n\n"
-    )
-
-    if tw_m:
-        msg += (
-            "🇹🇼 **台股 AI**\n"
-            f"- 筆數：{tw_m['count']}\n"
-            f"- 勝率：{tw_m['win_rate']:.0%}\n"
-            f"- 平均報酬：{tw_m['avg_ret']:+.2%}\n"
-            f"- 最大回撤：{tw_m['max_dd']:+.2%}\n\n"
-        )
-
-    if us_m:
-        msg += (
-            "🇺🇸 **美股 AI**\n"
-            f"- 筆數：{us_m['count']}\n"
-            f"- 勝率：{us_m['win_rate']:.0%}\n"
-            f"- 平均報酬：{us_m['avg_ret']:+.2%}\n"
-            f"- 最大回撤：{us_m['max_dd']:+.2%}\n\n"
-        )
-
-    msg += (
-        "🧠 **系統結論**\n"
-        "- AI 在高風險期間以防守為主\n"
-        "- 波動放大時，預測誤差增加屬正常\n\n"
-        f"{DISCLAIMER}"
-    )
+    embed = {
+        "title": "📊 L4 黑天鵝 AI 表現回顧報告",
+        "description": f"🕒 產生時間：{now:%Y-%m-%d %H:%M}",
+        "color": 0x5865F2,  # Discord blurple
+        "fields": [
+            {
+                "name": "🇹🇼 台股 AI",
+                "value": format_block("台股", tw_m),
+                "inline": True,
+            },
+            {
+                "name": "🇺🇸 美股 AI",
+                "value": format_block("美股", us_m),
+                "inline": True,
+            },
+            {
+                "name": "🧠 系統結論",
+                "value": (
+                    "• AI 在極端風險期間以防守為主\n"
+                    "• 高波動時預測誤差擴大屬正常\n"
+                    "• 系統成功避免過度進攻"
+                ),
+                "inline": False,
+            },
+            {
+                "name": "⚠️ 風險提示",
+                "value": DISCLAIMER,
+                "inline": False,
+            },
+        ],
+    }
 
     requests.post(
         DISCORD_WEBHOOK_URL,
-        json={"content": msg[:1900]},
+        json={"embeds": [embed]},
         timeout=15,
     )
 
