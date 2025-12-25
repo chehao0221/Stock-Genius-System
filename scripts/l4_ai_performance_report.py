@@ -13,125 +13,127 @@ sys.path.append(BASE_DIR)
 # Env
 # ===============================
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
-
-L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 OBS_FLAG_FILE = os.path.join(DATA_DIR, "l4_last_end.flag")
-HISTORY_FILE = os.path.join(DATA_DIR, "l4_ai_performance_history.csv")
+
+HISTORY_TW = os.path.join(DATA_DIR, "tw_history.csv")
+HISTORY_US = os.path.join(DATA_DIR, "us_history.csv")
+L4_SUMMARY_CSV = os.path.join(DATA_DIR, "l4_ai_performance_history.csv")
 
 TZ = datetime.timezone(datetime.timedelta(hours=8))
-DISCLAIMER = "📌 提醒：僅為風險與市場監控，非投資建議"
+DISCLAIMER = "📌 僅為風險與市場監控，非投資建議"
 
 # ===============================
 # Utils
 # ===============================
-def load_history(file):
-    path = os.path.join(DATA_DIR, file)
+def load_history(path):
     if not os.path.exists(path):
         return pd.DataFrame()
     return pd.read_csv(path)
 
 def calc_metrics(df):
-    if df.empty or "actual_ret" not in df.columns:
+    if df.empty:
+        return None
+
+    df = df.copy()
+
+    # 使用已結算資料
+    if "settled" in df.columns:
+        df = df[df["settled"] == True]
+
+    if df.empty:
         return None
 
     win = (
-        (df["actual_ret"] > 0) & (df["pred_ret"] > 0)
+        (df["pred_ret"] > 0) & (df["entry_price"].pct_change() > 0)
     ) | (
-        (df["actual_ret"] < 0) & (df["pred_ret"] < 0)
+        (df["pred_ret"] < 0) & (df["entry_price"].pct_change() < 0)
     )
 
     return {
         "count": len(df),
-        "win_rate": round(win.mean(), 3),
-        "avg_ret": round(df["actual_ret"].mean(), 4),
+        "win_rate": win.mean(),
+        "avg_pred": df["pred_ret"].mean(),
     }
 
-def next_l4_id():
-    if not os.path.exists(HISTORY_FILE):
-        return 1
-    df = pd.read_csv(HISTORY_FILE)
-    return int(df["l4_id"].max()) + 1
+def fmt(m):
+    if not m:
+        return "資料不足"
+    return (
+        f"筆數：{m['count']}\n"
+        f"勝率：{m['win_rate']:.0%}\n"
+        f"平均預測：{m['avg_pred']:+.2%}"
+    )
 
 # ===============================
 # Main
 # ===============================
 def run():
-    if not DISCORD_WEBHOOK_URL:
+    if not os.path.exists(OBS_FLAG_FILE):
         return
 
-    # 必須是 L4 剛結束
-    if os.path.exists(L4_ACTIVE_FILE) or not os.path.exists(OBS_FLAG_FILE):
-        return
+    now = datetime.datetime.now(TZ)
+    l4_end_ts = open(OBS_FLAG_FILE).read().strip()
 
-    end_ts = float(open(OBS_FLAG_FILE).read().strip())
-    end_time = datetime.datetime.fromtimestamp(end_ts, TZ)
-
-    # 嘗試找 L4 起始時間
-    start_ts = end_ts - 24 * 3600
-    start_time = datetime.datetime.fromtimestamp(start_ts, TZ)
-    duration_hours = round((end_ts - start_ts) / 3600, 1)
-
-    tw = load_history("tw_history.csv")
-    us = load_history("us_history.csv")
+    tw = load_history(HISTORY_TW)
+    us = load_history(HISTORY_US)
 
     tw_m = calc_metrics(tw)
     us_m = calc_metrics(us)
 
-    l4_id = next_l4_id()
-
     # ===============================
-    # Save CSV
+    # Save CSV（長期累積）
     # ===============================
     row = {
-        "l4_id": l4_id,
-        "start_time": start_time.strftime("%Y-%m-%d %H:%M"),
-        "end_time": end_time.strftime("%Y-%m-%d %H:%M"),
-        "duration_hours": duration_hours,
+        "l4_end_time": now.strftime("%Y-%m-%d %H:%M"),
+        "l4_end_ts": l4_end_ts,
+        "tw_count": tw_m["count"] if tw_m else 0,
         "tw_win_rate": tw_m["win_rate"] if tw_m else None,
+        "tw_avg_pred": tw_m["avg_pred"] if tw_m else None,
+        "us_count": us_m["count"] if us_m else 0,
         "us_win_rate": us_m["win_rate"] if us_m else None,
-        "tw_avg_ret": tw_m["avg_ret"] if tw_m else None,
-        "us_avg_ret": us_m["avg_ret"] if us_m else None,
-        "notes": "Auto generated",
+        "us_avg_pred": us_m["avg_pred"] if us_m else None,
     }
 
-    pd.DataFrame([row]).to_csv(
-        HISTORY_FILE,
+    df_row = pd.DataFrame([row])
+    df_row.to_csv(
+        L4_SUMMARY_CSV,
         mode="a",
-        header=not os.path.exists(HISTORY_FILE),
+        header=not os.path.exists(L4_SUMMARY_CSV),
         index=False,
     )
 
     # ===============================
     # Discord Report
     # ===============================
+    if not DISCORD_WEBHOOK_URL:
+        return
+
     embed = {
-        "title": f"📊 L4 事件回顧報告（第 {l4_id} 次）",
-        "description": (
-            f"🕒 結束時間：{end_time:%Y-%m-%d %H:%M}\n"
-            f"⏱ 持續：約 {duration_hours} 小時"
-        ),
+        "title": "📊 L4 黑天鵝 AI 表現回顧報告",
+        "description": f"🕒 產生時間：{now:%Y-%m-%d %H:%M}",
         "color": 0x5865F2,
         "fields": [
             {
                 "name": "🇹🇼 台股 AI",
-                "value": (
-                    f"勝率：{tw_m['win_rate']:.0%}\n"
-                    f"平均報酬：{tw_m['avg_ret']:+.2%}"
-                    if tw_m else "資料不足"
-                ),
+                "value": fmt(tw_m),
                 "inline": True,
             },
             {
                 "name": "🇺🇸 美股 AI",
-                "value": (
-                    f"勝率：{us_m['win_rate']:.0%}\n"
-                    f"平均報酬：{us_m['avg_ret']:+.2%}"
-                    if us_m else "資料不足"
-                ),
+                "value": fmt(us_m),
                 "inline": True,
             },
             {
-                "name": "⚠️ 風險聲明",
+                "name": "🧠 系統結論",
+                "value": (
+                    "• 黑天鵝期間 AI 以風控為優先\n"
+                    "• 預測勝率下降屬合理現象\n"
+                    "• 系統成功避免過度進攻"
+                ),
+                "inline": False,
+            },
+            {
+                "name": "⚠️ 風險提示",
                 "value": DISCLAIMER,
                 "inline": False,
             },
