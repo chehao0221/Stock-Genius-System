@@ -41,33 +41,44 @@ jobs:
 
           echo "🕒 UTC $HOUR:$MINUTE | Event: ${{ github.event_name }}"
 
+          SYSTEM_MODE="🟢 NORMAL"
+
           if [ -f "$L4_ACTIVE_FILE" ]; then
-            echo "🔴 SYSTEM MODE: L4 ACTIVE (Global Defense Mode)"
+            SYSTEM_MODE="🔴 L4 ACTIVE"
           elif [ -f "$OBS_FILE" ]; then
             LAST_END=$(cat $OBS_FILE || echo 0)
             DIFF=$((NOW_TS - LAST_END))
             if [ "$DIFF" -lt 86400 ]; then
-              echo "🟠 SYSTEM MODE: L4 OBSERVATION (Post-Crisis)"
-            else
-              echo "🟢 SYSTEM MODE: NORMAL"
+              SYSTEM_MODE="🟠 OBSERVATION"
             fi
-          else
-            echo "🟢 SYSTEM MODE: NORMAL"
+          fi
+
+          echo "SYSTEM MODE: $SYSTEM_MODE"
+
+          # 🔔 Discord system mode sync (once per day at UTC 00:00)
+          if [ "$HOUR" == "00" ] && [ "$MINUTE" == "00" ]; then
+            if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+              curl -s -X POST "$DISCORD_WEBHOOK_URL" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"content\": \"🧠 **Quant System Daily Status**\\n$SYSTEM_MODE\\n🕒 UTC $(date '+%Y-%m-%d %H:%M')\"
+                }"
+            fi
           fi
 
           # 1. 新聞雷達（整點 或 手動）
-          if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "$MINUTE" == "00" ] || [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
             python scripts/news_radar.py
           fi
 
           # 2. AI 分析
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            if [ "$HOUR" == "07" ] && [ "$MINUTE" == "30" ]; then
+            if [ \"$HOUR\" == \"07\" ] && [ \"$MINUTE\" == \"30\" ]; then
               python scripts/ai_tw_post.py
-            elif [ "$HOUR" == "22" ] && [ "$MINUTE" == "00" ]; then
+            elif [ \"$HOUR\" == \"22\" ] && [ \"$MINUTE\" == \"00\" ]; then
               python scripts/ai_us_post.py
             fi
           fi
