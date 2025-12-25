@@ -62,7 +62,8 @@ def load_cache():
     return {}
 
 def save_cache(c):
-    json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
 
 # ===============================
 # News Fetch
@@ -76,6 +77,7 @@ def get_news(q):
         feed = feedparser.parse(url)
         if not feed.entries:
             return None
+
         e = feed.entries[0]
         return {
             "title": e.title.split(" - ")[0],
@@ -99,10 +101,13 @@ def run():
     cache.setdefault("_l3_events", [])
     cache.setdefault("_l4_pause_until", 0)
 
+    # ===============================
     # 🔁 L4 Auto Recover
+    # ===============================
     if os.path.exists(L4_ACTIVE_FILE) and ts > cache["_l4_pause_until"]:
         os.remove(L4_ACTIVE_FILE)
         open(OBS_FLAG_FILE, "w").write(str(ts))
+
         if BLACK_SWAN_WEBHOOK_URL:
             requests.post(
                 BLACK_SWAN_WEBHOOK_URL,
@@ -117,7 +122,9 @@ def run():
                 timeout=15,
             )
 
-    # 取得今日 AI 標的
+    # ===============================
+    # 今日 AI 監控標的
+    # ===============================
     symbols = []
     for f in ["tw_history.csv", "us_history.csv"]:
         p = os.path.join(DATA_DIR, f)
@@ -126,7 +133,7 @@ def run():
             latest = df["date"].max()
             symbols += df[df["date"] == latest]["symbol"].tolist()
 
-    black = []
+    black_embeds = []
 
     for s in set(symbols):
         news = get_news(s.split(".")[0])
@@ -144,7 +151,7 @@ def run():
                 if ts - t <= L4_TIME_WINDOW_HOURS * 3600
             ]
 
-            # ===== L4 升級 =====
+            # ===== 升級 L4 =====
             if len(cache["_l3_events"]) >= L4_TRIGGER_COUNT:
                 final_level = 4
                 cache["_l4_pause_until"] = ts + L4_NEWS_PAUSE_HOURS * 3600
@@ -152,7 +159,7 @@ def run():
                 if os.path.exists(L3_WARNING_FILE):
                     os.remove(L3_WARNING_FILE)
 
-        # ===== L3 WARNING =====
+        # ===== L3 Warning（只發一次）=====
         if level == 3 and not os.path.exists(L4_ACTIVE_FILE):
             if not os.path.exists(L3_WARNING_FILE):
                 open(L3_WARNING_FILE, "w").write(str(ts))
@@ -172,7 +179,7 @@ def run():
 
         # ===== Embed =====
         if final_level >= 3:
-            black.append({
+            black_embeds.append({
                 "title": f"{s} | 黑天鵝 L{final_level}",
                 "url": news["link"],
                 "color": 0x8E0000,
@@ -185,17 +192,18 @@ def run():
 
     # ===== L3 冷卻解除 =====
     if os.path.exists(L3_WARNING_FILE):
-        recent = [t for t in cache["_l3_events"] if ts - t <= L3_COOLDOWN_HOURS * 3600]
+        recent = [t for t in cache["_l3_events"]
+                  if ts - t <= L3_COOLDOWN_HOURS * 3600]
         if not recent:
             os.remove(L3_WARNING_FILE)
 
     # ===== Send =====
-    if black and BLACK_SWAN_WEBHOOK_URL:
+    if black_embeds and BLACK_SWAN_WEBHOOK_URL:
         requests.post(
             BLACK_SWAN_WEBHOOK_URL,
             json={
                 "content": f"🚨 **黑天鵝警報**\n\n{DISCLAIMER}",
-                "embeds": black[:10]
+                "embeds": black_embeds[:10]
             },
             timeout=15,
         )
