@@ -2,15 +2,9 @@ name: Quant Intelligence Master
 
 on:
   schedule:
-    # 1. 每一小時執行一次新聞雷達
     - cron: '0 * * * *'
-
-    # 2. 台股盤後 AI 分析（台北 15:30）
     - cron: '30 07 * * 1-5'
-
-    # 3. 美股盤後 AI 分析（台北 06:00）
     - cron: '00 22 * * 1-5'
-
   workflow_dispatch:
 
 jobs:
@@ -43,40 +37,35 @@ jobs:
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
 
-          echo "Current UTC Time: $HOUR:$MINUTE"
-          echo "Trigger: ${{ github.event_name }}"
-
-          # 1. 新聞雷達（整點 或 手動）
           if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "Running News Radar"
             python scripts/news_radar.py
           fi
 
-          # 2. AI 分析（L4 active 時會自動被 script 擋掉）
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "Manual trigger: Run ALL AI tasks"
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
             if [ "$HOUR" == "07" ] && [ "$MINUTE" == "30" ]; then
-              echo "Scheduled: Taiwan AI"
               python scripts/ai_tw_post.py
             elif [ "$HOUR" == "22" ] && [ "$MINUTE" == "00" ]; then
-              echo "Scheduled: US AI"
               python scripts/ai_us_post.py
             fi
           fi
 
       - name: Commit and Push
         run: |
+          if [ -f data/l4_active.flag ]; then
+            echo "🚨 L4 active — skip commit & push"
+            exit 0
+          fi
+
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-
           git add data/
 
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update history and news cache [skip ci]"
+            git commit -m "Update history and cache [skip ci]"
             git push
           fi
