@@ -47,7 +47,7 @@ def is_market_open(market: str) -> bool:
 # ===============================
 BLACK_SWAN_LEVELS = {
     3: ["破產", "下市", "bankruptcy", "delist", "halt"],
-    2: ["制裁", "違約", "lawsuit", "SEC", "sanction"],
+    2: ["制裁", "違約", "lawsuit", "sec", "sanction"],
     1: ["裁員", "停產", "調查", "縮減"]
 }
 
@@ -156,7 +156,8 @@ def run():
     market_open = is_market_open(market)
 
     cache = load_cache()
-    normal, black = [], []
+    normal_embeds = []
+    black_swan_embeds = []
 
     symbols = (
         get_today_ai_top(market)
@@ -172,39 +173,39 @@ def run():
         level = get_black_swan_level(news["title"])
         impact = detect_market_impact(sym)
 
-        if level == 0 and cache.get(sym) == news["title"]:
+        # === cache 規則 ===
+        if level < 3 and cache.get(sym) == news["title"]:
             continue
 
         cache[sym] = news["title"]
 
-        embed = {
-            "title": f"{sym} | {impact}",
-            "url": news["link"],
-            "color": 0xE74C3C if level >= 2 else 0xF1C40F,
-            "fields": [
-                {
-                    "name": f"🚨 黑天鵝等級 L{level}" if level else "📰 焦點新聞",
-                    "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
-                    "inline": False,
-                }
-            ],
-        }
+        # === L3 才進黑天鵝頻道 ===
+        if level == 3:
+            embed = {
+                "title": f"{sym} | {impact}",
+                "url": news["link"],
+                "color": 0xE74C3C,
+                "fields": [
+                    {
+                        "name": "🚨 黑天鵝 L3（最高警戒）",
+                        "value": f"[{news['title']}]({news['link']})\n🕒 {news['time']}",
+                        "inline": False,
+                    }
+                ],
+            }
+            black_swan_embeds.append(embed)
 
-        (black if level else normal).append(embed)
+        # === L1 / L2 完全靜音（不推播） ===
 
-    if normal:
-        requests.post(
-            DISCORD_WEBHOOK_URL,
-            json={"content": f"### 市場新聞\n📅 {now:%Y-%m-%d %H:%M}", "embeds": normal[:10]},
-        )
-
-    if black and BLACK_SWAN_WEBHOOK_URL:
+    # === 推播 ===
+    if black_swan_embeds and BLACK_SWAN_WEBHOOK_URL:
         requests.post(
             BLACK_SWAN_WEBHOOK_URL,
             json={
-                "content": f"🚨🚨 黑天鵝警報 🚨🚨\n📅 {now:%Y-%m-%d %H:%M}",
-                "embeds": black[:10],
+                "content": f"🚨🚨 **L3 黑天鵝警報（立即注意）** 🚨🚨\n📅 {now:%Y-%m-%d %H:%M}",
+                "embeds": black_swan_embeds[:10],
             },
+            timeout=15,
         )
 
     save_cache(cache)
