@@ -72,7 +72,10 @@ def get_live_news(query):
             return None
 
         entry = feed.entries[0]
-        pub_time = datetime.datetime(*entry.published_parsed[:6], tzinfo=datetime.timezone.utc)
+        pub_time = datetime.datetime(
+            *entry.published_parsed[:6],
+            tzinfo=datetime.timezone.utc
+        )
         now_utc = datetime.datetime.now(datetime.timezone.utc)
 
         if (now_utc - pub_time).total_seconds() / 3600 > 12:
@@ -81,7 +84,7 @@ def get_live_news(query):
         return {
             "title": entry.title.split(" - ")[0],
             "link": entry.link,
-            "time": pub_time.astimezone(TZ_TW).strftime("%H:%M")
+            "time": pub_time.astimezone(TZ_TW).strftime("%H:%M"),
         }
     except:
         return None
@@ -133,7 +136,7 @@ def get_all_ai_history(market="TW"):
 # ===============================
 FIXED_WATCH = {
     "TW": ["2330.TW", "2317.TW", "2454.TW"],
-    "US": ["NVDA", "AAPL", "MSFT", "TSLA"]
+    "US": ["NVDA", "AAPL", "MSFT", "TSLA"],
 }
 
 # ===============================
@@ -149,6 +152,7 @@ def run():
 
     news_cache = load_cache()
     embeds = []
+    has_black_swan = False  # ✅ 關鍵 flag
 
     # ===============================
     # Watch List Decision
@@ -158,7 +162,9 @@ def run():
         label = "AI 海選強勢股"
         title = "📈 AI 交易日雷達"
     else:
-        symbols = sorted(set(get_all_ai_history(market) + FIXED_WATCH.get(market, [])))
+        symbols = sorted(
+            set(get_all_ai_history(market) + FIXED_WATCH.get(market, []))
+        )
         label = "假日關注股"
         title = "🟡 假日市場觀察"
 
@@ -173,6 +179,8 @@ def run():
                 continue
 
             force_push = is_black_swan(news["title"])
+            if force_push:
+                has_black_swan = True  # ✅ 只在這裡判斷
 
             if not force_push and news_cache.get(sym) == news["title"]:
                 continue
@@ -205,13 +213,20 @@ def run():
     if not embeds:
         return
 
-    header = title
-    if any(is_black_swan(e["fields"][0]["value"]) for e in embeds):
+    # ===============================
+    # Header Decision (FIXED)
+    # ===============================
+    if has_black_swan:
         header = "🚨 黑天鵝即時警報"
+    else:
+        header = title
 
     requests.post(
         DISCORD_WEBHOOK_URL,
-        json={"content": f"### {header}\n📅 {now:%Y-%m-%d %H:%M}", "embeds": embeds[:10]},
+        json={
+            "content": f"### {header}\n📅 {now:%Y-%m-%d %H:%M}",
+            "embeds": embeds[:10],
+        },
         timeout=15,
     )
 
