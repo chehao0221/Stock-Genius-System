@@ -62,12 +62,8 @@ def load_cache():
     return {}
 
 def save_cache(c):
-    json.dump(
-        c,
-        open(CACHE_FILE, "w", encoding="utf-8"),
-        ensure_ascii=False,
-        indent=2
-    )
+    json.dump(c, open(CACHE_FILE, "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
 
 # ===============================
 # News Fetch
@@ -105,34 +101,30 @@ def run():
     cache.setdefault("_l3_events", [])
     cache.setdefault("_l4_pause_until", 0)
 
-    # =====================================================
-    # 🔁 L4 Auto Recover（系統唯一恢復入口）
-    # =====================================================
+    # ===============================
+    # 🔁 L4 AUTO RECOVER（核心）
+    # ===============================
     if os.path.exists(L4_ACTIVE_FILE) and ts > cache["_l4_pause_until"]:
-        # 1️⃣ 關閉 L4
         os.remove(L4_ACTIVE_FILE)
-
-        # 2️⃣ 寫入觀察期起點
         open(OBS_FLAG_FILE, "w").write(str(ts))
 
-        # 3️⃣ Discord 系統通知
+        # 🔔 Discord 通知
         if BLACK_SWAN_WEBHOOK_URL:
             requests.post(
                 BLACK_SWAN_WEBHOOK_URL,
                 json={
                     "content": (
-                        "📊 **L4 黑天鵝事件結束（Auto Recover）**\n"
+                        "📊 **L4 黑天鵝事件結束**\n"
                         f"🕒 {now:%Y-%m-%d %H:%M}\n"
-                        "🟠 系統已進入 24h 風險觀察期\n\n"
+                        "🟠 系統已進入風險觀察期\n\n"
                         f"{DISCLAIMER}"
                     )
                 },
                 timeout=15,
             )
 
-        # 4️⃣ 觸發 AI 事後責任模組（最關鍵）
+        # 🧠 Auto Hook：AI 表現回顧
         os.system("python scripts/l4_ai_performance_report.py")
-        os.system("python scripts/l4_postmortem_report.py")
 
     # ===============================
     # 今日 AI 監控標的
@@ -204,10 +196,8 @@ def run():
 
     # ===== L3 冷卻解除 =====
     if os.path.exists(L3_WARNING_FILE):
-        recent = [
-            t for t in cache["_l3_events"]
-            if ts - t <= L3_COOLDOWN_HOURS * 3600
-        ]
+        recent = [t for t in cache["_l3_events"]
+                  if ts - t <= L3_COOLDOWN_HOURS * 3600]
         if not recent:
             os.remove(L3_WARNING_FILE)
 
