@@ -37,10 +37,14 @@ jobs:
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
 
+          echo "🕒 UTC $HOUR:$MINUTE | Event: ${{ github.event_name }}"
+
+          # 1. 新聞雷達（整點 或 手動）
           if [ "$MINUTE" == "00" ] || [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             python scripts/news_radar.py
           fi
 
+          # 2. AI 分析
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
