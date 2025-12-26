@@ -14,23 +14,28 @@ US_HISTORY = os.path.join(DATA_DIR, "us_history.csv")
 OUT_TW = os.path.join(DATA_DIR, "metrics_tw.csv")
 OUT_US = os.path.join(DATA_DIR, "metrics_us.csv")
 
+LOOKBACK = 0  # 0 = 全部，>0 = 最近 N 筆
+
 # ===============================
 # Utils
 # ===============================
 def calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    計算：
-    - total trades
-    - hit rate
-    - avg return
-    - cumulative return
-    - max drawdown
-    """
     df = df.copy()
+
+    # 自動補 hit（向下相容）
+    if "hit" not in df.columns and {"pred_ret", "real_ret"}.issubset(df.columns):
+        df["hit"] = (
+            ((df["pred_ret"] > 0) & (df["real_ret"] > 0)) |
+            ((df["pred_ret"] < 0) & (df["real_ret"] < 0))
+        )
+
     df = df[df["real_ret"].notna()]
 
     if df.empty:
         return pd.DataFrame()
+
+    if LOOKBACK > 0:
+        df = df.tail(LOOKBACK)
 
     df["cum_ret"] = (1 + df["real_ret"]).cumprod() - 1
     peak = df["cum_ret"].cummax()
@@ -47,6 +52,7 @@ def calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame([metrics])
 
+
 # ===============================
 # Main
 # ===============================
@@ -57,30 +63,51 @@ def run_one(history_path: str, out_path: str, label: str):
 
     df = pd.read_csv(history_path)
 
-    required = {"real_ret", "hit"}
-    if not required.issubset(df.columns):
+    if not {"real_ret", "pred_ret"}.issubset(df.columns):
         print(f"⚠️ {label} history not settled yet, skip")
         return
 
-    metrics = calc_metrics(df)
-    if metrics.empty:
-        print(f"⚠️ {label} no settled trades")
-        return
+    # Horizon-aware
+    if "horizon" in df.columns:
+        for h in sorted(df["horizon"].dropna().unique()):
+            sub = df[df["horizon"] == h]
+            metrics = calc_metrics(sub)
+            if metrics.empty:
+                continue
 
-    metrics["market"] = label
+            metrics["market"] = label
+            metrics["horizon"] = int(h)
 
-    metrics.to_csv(
-        out_path,
-        mode="a",
-        header=not os.path.exists(out_path),
-        index=False,
-    )
+            metrics.to_csv(
+                out_path,
+                mode="a",
+                header=not os.path.exists(out_path),
+                index=False,
+            )
 
-    print(f"✅ {label} metrics updated")
+            print(f"✅ {label} | Horizon {h} metrics updated")
+    else:
+        metrics = calc_metrics(df)
+        if metrics.empty:
+            return
+
+        metrics["market"] = label
+        metrics["horizon"] = "NA"
+
+        metrics.to_csv(
+            out_path,
+            mode="a",
+            header=not os.path.exists(out_path),
+            index=False,
+        )
+
+        print(f"✅ {label} metrics updated")
+
 
 def main():
     run_one(TW_HISTORY, OUT_TW, "TW")
     run_one(US_HISTORY, OUT_US, "US")
+
 
 if __name__ == "__main__":
     main()
