@@ -11,6 +11,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 sys.path.append(BASE_DIR)
+
 warnings.filterwarnings("ignore")
 
 # ===============================
@@ -20,6 +21,7 @@ L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
 if os.path.exists(L4_ACTIVE_FILE):
+    print("🚨 L4 active — TW AI skipped")
     sys.exit(0)
 
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
@@ -39,11 +41,14 @@ def calc_pivot(df):
     p = (h + l + c) / 3
     return round(2 * p - h, 1), round(2 * p - l, 1)
 
+def pred_icon(pred):
+    return "🟢" if pred > 0 else "⚪"
+
 # ===============================
 # Main
 # ===============================
 def run():
-    watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW"]
+    watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
 
     data = yf.download(
         watch, period="2y", auto_adjust=True, group_by="ticker", progress=False
@@ -67,52 +72,52 @@ def run():
             pred = float(model.predict(df[feats].iloc[-1:])[0])
             sup, res = calc_pivot(df)
 
-            results[s] = {"pred": pred, "price": df["Close"].iloc[-1], "sup": sup, "res": res}
+            results[s] = {
+                "pred": pred,
+                "price": df["Close"].iloc[-1],
+                "sup": sup,
+                "res": res,
+            }
         except Exception:
             continue
 
     # ===============================
-    # Discord Embed
+    # Discord Message
     # ===============================
-    sorted_syms = sorted(results, key=lambda x: results[x]["pred"], reverse=True)
-    medals = {sorted_syms[i]: m for i, m in enumerate(["🥇", "🥈", "🥉"]) if i < len(sorted_syms)}
+    mode = "🟡 **SYSTEM MODE：RISK WARNING (L3)**" if L3_WARNING else "🟢 **SYSTEM MODE：NORMAL**"
+    msg = f"{mode}\n\n📊 **台股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
 
-    color = 0xF1C40F if L3_WARNING else 0x2ECC71
-    embed = {
-        "title": "📊 台股 AI 5 日預測報告",
-        "description": f"📅 {datetime.now():%Y-%m-%d}\n"
-                       f"{'🟡 系統進入風險觀察期 (L3)' if L3_WARNING else '🟢 系統正常運作'}",
-        "color": color,
-        "fields": [],
-        "footer": {"text": "AI 為機率模型，僅供研究參考"},
-    }
+    ranked = sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
 
-    for s in sorted_syms:
-        r = results[s]
-        emoji = "📈" if r["pred"] > 0 else "📉"
-        medal = medals.get(s, "")
-        embed["fields"].append({
-            "name": f"{medal} {s}",
-            "value": f"{emoji} 預估 **{r['pred']:+.2%}**\n支撐 `{r['sup']}` / 壓力 `{r['res']}`",
-            "inline": True,
-        })
+    for i, (s, r) in enumerate(ranked):
+        medal = medals[i] if i < 3 else ""
+        icon = pred_icon(r["pred"])
+        msg += f"{medal} **{s}**\n"
+        msg += f"📈 預估 `{r['pred']:+.2%}` {icon}\n"
+        msg += f"支撐 `{r['sup']}` / 壓力 `{r['res']}`\n\n"
+
+    msg += "⚠️ 模型為機率推估，僅供研究參考，非投資建議。"
 
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=15)
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
 
-    # ===============================
-    # Save History (NORMAL only)
-    # ===============================
+    # 僅 NORMAL 寫歷史（原邏輯不動）
     if not L3_WARNING:
-        pd.DataFrame([
-            {
-                "date": datetime.now().date(),
-                "symbol": s,
-                "entry_price": results[s]["price"],
-                "pred_ret": results[s]["pred"],
-                "settled": False,
-            } for s in results
-        ]).to_csv(HISTORY_FILE, mode="a", header=not os.path.exists(HISTORY_FILE), index=False)
+        hist = [{
+            "date": datetime.now().date(),
+            "symbol": s,
+            "entry_price": r["price"],
+            "pred_ret": r["pred"],
+            "settled": False,
+        } for s, r in results.items()]
+
+        pd.DataFrame(hist).to_csv(
+            HISTORY_FILE,
+            mode="a",
+            header=not os.path.exists(HISTORY_FILE),
+            index=False,
+        )
 
 if __name__ == "__main__":
     run()
