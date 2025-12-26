@@ -32,10 +32,10 @@ def main():
         if is_deteriorating(recent):
             if not os.path.exists(L3_FLAG):
                 open(L3_FLAG, "w").write("auto\n")
-                print("🚨 L3 triggered by hit-rate deterioration")
+                print("🚨 命中率連續惡化，系統自動進入 L3 風險警示模式")
             return
 
-    print("🟢 Hit rate stable")
+    print("🟢 命中率趨勢穩定，系統維持正常模式")
 
 
 if __name__ == "__main__":
