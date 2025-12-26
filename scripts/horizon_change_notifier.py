@@ -16,25 +16,26 @@ def main():
         return
 
     current = json.load(open(POLICY_FILE, "r", encoding="utf-8"))
-
-    if os.path.exists(SNAPSHOT_FILE):
-        prev = json.load(open(SNAPSHOT_FILE, "r", encoding="utf-8"))
-    else:
-        prev = {}
+    prev = json.load(open(SNAPSHOT_FILE, "r", encoding="utf-8")) if os.path.exists(SNAPSHOT_FILE) else {}
 
     changes = []
-    for k, v in current.items():
-        if prev.get(k) != v:
-            changes.append((k, prev.get(k), v))
+    for market, new_h in current.items():
+        old_h = prev.get(market)
+        if old_h != new_h:
+            changes.append((market.upper(), old_h, new_h))
 
     if changes:
-        msg = "🚨 **Horizon 策略調整通知**\n\n"
+        msg = "🚨 **預測週期（Horizon）自動調整通知**\n\n"
         for m, old, new in changes:
-            msg += f"- {m.upper()}：{old} → **{new} 日**\n"
+            if old is None:
+                msg += f"- {m}：啟用 **{new} 日預測週期**\n"
+            else:
+                msg += f"- {m}：由 {old} 日 → **{new} 日**\n"
 
-        requests.post(WEBHOOK, json={"content": msg}, timeout=15)
+        msg += "\n📌 原因：近期命中率下降，系統自動進行風險保守調整"
+        requests.post(WEBHOOK, json={"content": msg[:1900]}, timeout=15)
 
-    json.dump(current, open(SNAPSHOT_FILE, "w", encoding="utf-8"), indent=2)
+    json.dump(current, open(SNAPSHOT_FILE, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
