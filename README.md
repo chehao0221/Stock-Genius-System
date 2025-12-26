@@ -60,85 +60,49 @@
 - `l4_postmortem_report.py`
 
 ---
+
 Stock-Genius-System/
 │
 ├─ .github/
 │  └─ workflows/
-│     └─ quant_master.yml
-│        └─ GitHub Actions 主控排程（新聞 / AI / 風控）
+│     └─ quant_master.yml          # GitHub Actions 主控排程（新聞 / AI / 風控）
 │
 ├─ data/
-│  ├─ tw_history.csv
-│  │   └─ 台股 AI 預測歷史紀錄
-│  ├─ us_history.csv
-│  │   └─ 美股 AI 預測歷史紀錄
-│  │
-│  ├─ horizon_policy.json
-│  │   └─ 預測 Horizon 設定（Freeze）
-│  │
-│  ├─ l3_warning.flag
-│  │   └─ L3 風險觀察期旗標
-│  ├─ l4_active.flag
-│  │   └─ L4 黑天鵝防禦啟動旗標
-│  ├─ l4_last_end.flag
-│  │   └─ L4 結束時間紀錄
-│  │
-│  ├─ black_swan_history.csv
-│  │   └─ 黑天鵝事件歷史紀錄
-│  ├─ news_cache.json
-│  │   └─ 新聞雷達快取
-│  │
-│  ├─ equity_TW.png
-│  │   └─ 台股 Equity Curve
-│  └─ equity_US.png
-│      └─ 美股 Equity Curve
+│  ├─ tw_history.csv               # 🇹🇼 台股 AI 預測歷史紀錄
+│  ├─ us_history.csv               # 🇺🇸 美股 AI 預測歷史紀錄
+│  ├─ horizon_policy.json          # 🔁 預測 Horizon 設定（Freeze）
+│  ├─ l3_warning.flag              # 🟡 L3 風險觀察期旗標
+│  ├─ l4_active.flag               # 🔴 L4 黑天鵝防禦啟動旗標
+│  ├─ l4_last_end.flag             # ⏱ L4 結束時間紀錄
+│  ├─ black_swan_history.csv       # 🚨 黑天鵝事件歷史紀錄
+│  ├─ news_cache.json              # 📰 新聞雷達快取
+│  ├─ equity_TW.png                # 📈 台股 Equity Curve（自動生成）
+│  └─ equity_US.png                # 📈 美股 Equity Curve（自動生成）
 │
 ├─ scripts/
-│  ├─ ai_tw_post.py
-│  │   └─ 🇹🇼 台股 AI 分析與 Discord 推播
-│  ├─ ai_us_post.py
-│  │   └─ 🇺🇸 美股 AI 分析與 Discord 推播
+│  ├─ ai_tw_post.py                # 🇹🇼 台股 AI 分析與 Discord 推播
+│  ├─ ai_us_post.py                # 🇺🇸 美股 AI 分析與 Discord 推播
+│  ├─ news_radar.py                # 📰 新聞雷達 / 黑天鵝偵測
 │  │
-│  ├─ news_radar.py
-│  │   └─ 📰 新聞雷達 / 黑天鵝偵測
+│  ├─ performance_dashboard.py     # 📊 績效統計 + Equity Curve 產生
+│  ├─ performance_discord_report.py# 📣 Discord 績效推播（僅觀測）
 │  │
-│  ├─ performance_dashboard.py
-│  │   └─ 📊 績效統計與 Equity Curve 產生
-│  ├─ performance_discord_report.py
-│  │   └─ 📣 Discord 績效推播（僅觀測）
+│  ├─ horizon_optimizer.py         # 🔁 Horizon 初始化與策略控制（Freeze）
+│  ├─ hit_rate_trend_guard.py      # 🎯 命中率趨勢監控
+│  ├─ horizon_guardian.py          # 🛡 Horizon 狀態守門
+│  ├─ horizon_change_notifier.py   # 🔔 Horizon 變更通知
 │  │
-│  ├─ horizon_optimizer.py
-│  │   └─ 🔁 Horizon 初始化（Freeze）
-│  │
-│  ├─ hit_rate_trend_guard.py
-│  │   └─ 📉 命中率趨勢監控
-│  ├─ horizon_guardian.py
-│  │   └─ 🛡 Horizon 狀態守門
-│  ├─ horizon_change_notifier.py
-│  │   └─ 🔔 Horizon 變更記錄
+│  ├─ l4_defense_mode.py            # 🔴 L4 黑天鵝防禦核心邏輯
+│  ├─ l4_dynamic_pause.py           # ⏸ 動態停機判斷
+│  ├─ l4_market_impact.py           # 🌊 市場衝擊分析
+│  ├─ l4_ai_performance_compare.py  # 📉 L4 前後 AI 表現比較
+│  ├─ l4_ai_performance_report.py   # 📄 L4 分析報告
+│  └─ l4_postmortem_report.py       # 🧾 黑天鵝事後檢討
 │
-│  ├─ l4_defense_mode.py
-│  │   └─ 🔴 L4 黑天鵝防禦邏輯
-│  ├─ l4_dynamic_pause.py
-│  │   └─ ⏸ 動態停機判斷
-│  ├─ l4_market_impact.py
-│  │   └─ 🌊 市場衝擊分析
-│  ├─ l4_ai_performance_compare.py
-│  │   └─ 📊 L4 前後 AI 表現比較
-│  ├─ l4_ai_performance_report.py
-│  │   └─ 🧾 L4 分析報告
-│  └─ l4_postmortem_report.py
-│      └─ 📝 黑天鵝事後檢討
-│
-├─ requirements.txt
-│  └─ Python 套件依賴
-│
-├─ README.md
-│  └─ 專案說明文件
-│
-└─ LICENSE
-   └─ 授權文件（選用）
----
+├─ requirements.txt                # 🐍 Python 套件依賴
+├─ README.md                       # 📘 專案說明文件
+└─ LICENSE                         # 📄 授權文件（選用）
+
 
 ---
 
