@@ -1,8 +1,8 @@
-import os, sys, warnings, requests
+import os, sys, warnings, requests, json
 import yfinance as yf
 import pandas as pd
 from xgboost import XGBRegressor
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ===============================
 # Base / Data
@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore")
 # ===============================
 L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
+HORIZON_POLICY = os.path.join(DATA_DIR, "horizon_policy.json")
 
 if os.path.exists(L4_ACTIVE_FILE):
     print("🚨 L4 active — TW AI skipped")
@@ -27,18 +28,31 @@ if os.path.exists(L4_ACTIVE_FILE):
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
 
 # ===============================
+# Horizon Resolver
+# ===============================
+def resolve_horizon():
+    if os.path.exists(HORIZON_POLICY):
+        try:
+            with open(HORIZON_POLICY, "r") as f:
+                policy = json.load(f)
+            h = policy.get("tw", {}).get("best")
+            if h:
+                return int(h)
+        except Exception:
+            pass
+    return 3 if L3_WARNING else 5
+
+MAIN_H = resolve_horizon()
+HORIZONS = sorted(set([3, 5, 10, MAIN_H]))
+
+# ===============================
 # Settings
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
-
 WEBHOOK_URL = (
     os.getenv("DISCORD_WEBHOOK_TW")
     or os.getenv("DISCORD_WEBHOOK_URL", "")
 ).strip()
-
-# 🧠 動態 horizon
-HORIZONS = [3, 5, 10]
-MAIN_H = 3 if L3_WARNING else 5
 
 # ===============================
 # Utils
@@ -48,39 +62,6 @@ def calc_pivot(df):
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
     return round(2 * p - h, 1), round(2 * p - l, 1)
-
-def settle_history(df_price):
-    if not os.path.exists(HISTORY_FILE):
-        return
-
-    hist = pd.read_csv(HISTORY_FILE)
-    if "exit_price" not in hist.columns:
-        hist["exit_price"] = None
-        hist["real_ret"] = None
-        hist["hit"] = None
-
-    for i, r in hist.iterrows():
-        if pd.notna(r["exit_price"]):
-            continue
-
-        entry_date = pd.to_datetime(r["date"])
-        horizon = int(r.get("horizon", 5))
-        symbol = r["symbol"]
-
-        if symbol not in df_price:
-            continue
-
-        px = df_price[symbol]
-        future = px[px.index >= entry_date]
-
-        if len(future) > horizon:
-            exit_price = future.iloc[horizon]["Close"]
-            real_ret = exit_price / r["entry_price"] - 1
-            hist.loc[i, "exit_price"] = round(exit_price, 2)
-            hist.loc[i, "real_ret"] = round(real_ret, 4)
-            hist.loc[i, "hit"] = (real_ret * r["pred_ret"]) > 0
-
-    hist.to_csv(HISTORY_FILE, index=False)
 
 # ===============================
 # Main
@@ -92,8 +73,6 @@ def run():
         symbols, period="2y", auto_adjust=True,
         group_by="ticker", progress=False
     )
-
-    settle_history(data)
 
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
@@ -116,7 +95,7 @@ def run():
             sup, res = calc_pivot(df)
             results[s] = {
                 "price": df["Close"].iloc[-1],
-                "preds": preds,
+                "pred": preds[MAIN_H],
                 "sup": sup,
                 "res": res,
             }
@@ -127,23 +106,21 @@ def run():
     msg = f"{mode}\n\n📊 **台股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
 
     for s, r in results.items():
-        p = r["preds"][MAIN_H]
-        msg += f"{s}：`{p:+.2%}`（{MAIN_H}日） 支撐 {r['sup']} / 壓力 {r['res']}\n"
+        msg += f"{s}：`{r['pred']:+.2%}`（{MAIN_H}日） 支撐 {r['sup']} / 壓力 {r['res']}\n"
 
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
 
     if not L3_WARNING:
-        rows = []
-        for s, r in results.items():
-            rows.append({
-                "date": datetime.now().date(),
-                "symbol": s,
-                "entry_price": r["price"],
-                "pred_ret": r["preds"][MAIN_H],
-                "horizon": MAIN_H,
-                "settled": False,
-            })
+        rows = [{
+            "date": datetime.now().date(),
+            "symbol": s,
+            "entry_price": r["price"],
+            "pred_ret": r["pred"],
+            "horizon": MAIN_H,
+            "settled": False,
+        } for s, r in results.items()]
+
         pd.DataFrame(rows).to_csv(
             HISTORY_FILE, mode="a",
             header=not os.path.exists(HISTORY_FILE),
