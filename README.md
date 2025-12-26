@@ -102,7 +102,7 @@ Stock-Genius-System/
 ├─ requirements.txt                # 🐍 Python 套件依賴
 ├─ README.md                       # 📘 專案說明文件
 └─ LICENSE                         # 📄 授權文件（選用）
-
+```
 
 ---
 
