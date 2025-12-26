@@ -9,6 +9,7 @@ from datetime import datetime
 # ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 sys.path.append(BASE_DIR)
 
 warnings.filterwarnings("ignore")
@@ -20,7 +21,15 @@ L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
 if os.path.exists(L4_ACTIVE_FILE):
-    print("🚨 L4 active — TW AI skipped")
+    EMBED = {
+        "title": "🔴 黑天鵝防禦模式啟動",
+        "description": "所有台股 AI 預測已暫停\n系統僅進行風險與新聞監控",
+        "color": 0xE74C3C,
+        "footer": {"text": "Stock-Genius-System · 防禦模式"}
+    }
+    url = os.getenv("DISCORD_WEBHOOK_TW", "").strip()
+    if url:
+        requests.post(url, json={"embeds": [EMBED]}, timeout=15)
     sys.exit(0)
 
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
@@ -29,17 +38,7 @@ L3_WARNING = os.path.exists(L3_WARNING_FILE)
 # Settings
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
-POLICY_FILE = os.path.join(DATA_DIR, "horizon_policy.json")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_TW", "").strip()
-
-# ===============================
-# Horizon Policy
-# ===============================
-if os.path.exists(POLICY_FILE):
-    policy = json.load(open(POLICY_FILE, "r", encoding="utf-8"))
-    MAIN_H = int(policy.get("tw", 5))
-else:
-    MAIN_H = 5
 
 # ===============================
 # Utils
@@ -49,19 +48,6 @@ def calc_pivot(df):
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
     return round(2 * p - h, 1), round(2 * p - l, 1)
-
-def calc_horizon_hit_rate(history_file, horizon, lookback=30):
-    if not os.path.exists(history_file):
-        return None, 0
-    df = pd.read_csv(history_file)
-    if "real_ret" not in df.columns:
-        return None, 0
-    df = df[df["horizon"] == horizon].dropna(subset=["pred_ret", "real_ret"]).tail(lookback)
-    if len(df) < 10:
-        return None, len(df)
-    hit = ((df["pred_ret"] > 0) & (df["real_ret"] > 0)) | \
-          ((df["pred_ret"] < 0) & (df["real_ret"] < 0))
-    return round(hit.mean() * 100, 1), len(df)
 
 # ===============================
 # Main
@@ -79,51 +65,40 @@ def run():
             df["mom20"] = df["Close"].pct_change(20)
             df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
-            df["target"] = df["Close"].shift(-MAIN_H) / df["Close"] - 1
+            df["target"] = df["Close"].shift(-5) / df["Close"] - 1
 
-            train = df.iloc[:-MAIN_H].dropna()
+            train = df.iloc[:-5].dropna()
             model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05)
             model.fit(train[feats], train["target"])
 
             pred = float(model.predict(df[feats].iloc[-1:])[0])
             sup, res = calc_pivot(df)
 
-            results[s] = {"pred": pred, "price": df["Close"].iloc[-1], "sup": sup, "res": res}
+            results[s] = (pred, sup, res)
         except Exception:
             continue
 
-    hit_rate, n = calc_horizon_hit_rate(HISTORY_FILE, MAIN_H)
-    horizon_info = (
-        f"🧠 Horizon：{MAIN_H} 日｜命中率：{hit_rate}%（{n} 筆）"
-        if hit_rate is not None else
-        f"🧠 Horizon：{MAIN_H} 日｜命中率：計算中"
-    )
+    color = 0x2ECC71 if not L3_WARNING else 0xF1C40F
+    title = "🟢 系統狀態：正常運作" if not L3_WARNING else "🟡 系統進入風險觀察期（L3）"
 
-    mode = "🟡 **SYSTEM MODE：RISK WARNING (L3)**" if L3_WARNING else "🟢 **SYSTEM MODE：NORMAL**"
-    msg = f"{mode}\n{horizon_info}\n\n📊 **台股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
+    fields = []
+    for s, (pred, sup, res) in results.items():
+        fields.append({
+            "name": s,
+            "value": f"預估 `{pred:+.2%}`\n支撐 `{sup}` / 壓力 `{res}`",
+            "inline": True
+        })
 
-    for s, r in results.items():
-        msg += f"{s}：`{r['pred']:+.2%}` (支撐 {r['sup']} / 壓力 {r['res']})\n"
+    embed = {
+        "title": title,
+        "description": f"📊 台股 AI 5 日預測報告（{datetime.now():%Y-%m-%d}）",
+        "color": color,
+        "fields": fields,
+        "footer": {"text": "AI 為機率模型，僅供研究參考"}
+    }
 
     if WEBHOOK_URL:
-        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
-
-    if not L3_WARNING:
-        hist = [{
-            "date": datetime.now().date(),
-            "symbol": s,
-            "entry_price": r["price"],
-            "pred_ret": r["pred"],
-            "horizon": MAIN_H,
-            "settled": False,
-        } for s, r in results.items()]
-
-        pd.DataFrame(hist).to_csv(
-            HISTORY_FILE,
-            mode="a",
-            header=not os.path.exists(HISTORY_FILE),
-            index=False,
-        )
+        requests.post(WEBHOOK_URL, json={"embeds": [embed]}, timeout=15)
 
 if __name__ == "__main__":
     run()
