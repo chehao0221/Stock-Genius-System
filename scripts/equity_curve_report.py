@@ -7,8 +7,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 FILES = {
-    "TW": os.path.join(DATA_DIR, "tw_history.csv"),
-    "US": os.path.join(DATA_DIR, "us_history.csv"),
+    "台股": os.path.join(DATA_DIR, "tw_history.csv"),
+    "美股": os.path.join(DATA_DIR, "us_history.csv"),
 }
 
 WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
@@ -19,11 +19,13 @@ def plot_equity(df, title, path):
     if df.empty:
         return False
 
-    df["equity"] = (1 + df["real_ret"]).cumprod()
+    df["權益曲線"] = (1 + df["real_ret"]).cumprod()
 
     plt.figure(figsize=(6, 4))
-    plt.plot(df["equity"])
+    plt.plot(df["權益曲線"])
     plt.title(title)
+    plt.xlabel("交易序列")
+    plt.ylabel("資金變化")
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(path)
@@ -52,8 +54,8 @@ def main():
         df = pd.read_csv(file)
         img = os.path.join(DATA_DIR, f"equity_{market}.png")
 
-        if plot_equity(df, f"{market} Equity Curve", img):
-            send_image(img, f"📈 **{market} Equity Curve**")
+        if plot_equity(df, f"{market}｜AI 權益曲線（Equity Curve）", img):
+            send_image(img, f"📈 **{market} AI 權益曲線**")
 
 
 if __name__ == "__main__":
