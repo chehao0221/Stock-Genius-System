@@ -34,7 +34,7 @@ L3_WARNING = os.path.exists(L3_WARNING_FILE)
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_TW", "").strip()
-HORIZON = 5  # 🔒 固定 5 日（Freeze）
+HORIZON = 5  # 🔒 固定 5 日
 
 # ===============================
 # Utils
@@ -49,10 +49,7 @@ def calc_pivot(df):
 # Main
 # ===============================
 def run():
-    watch = [
-        "2330.TW", "2317.TW", "2454.TW",
-        "2308.TW", "2881.TW", "1301.TW", "1303.TW"
-    ]
+    watch = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW"]
 
     data = yf.download(
         watch,
@@ -90,7 +87,7 @@ def run():
             pred = float(model.predict(df[feats].iloc[-1:])[0])
             sup, res = calc_pivot(df)
 
-            results[s.replace(".TW", "")] = {
+            results[s] = {
                 "pred": pred,
                 "price": round(df["Close"].iloc[-1], 2),
                 "sup": sup,
@@ -100,17 +97,17 @@ def run():
             continue
 
     # ===============================
-    # Discord Display（✅ 唯一修改區）
+    # Discord Message (ONLY CHANGE)
     # ===============================
-    mode_line = (
-        "🟡 **系統進入風險觀察期（L3）**"
+    mode = (
+        "🟡 **SYSTEM MODE：RISK WARNING (L3)**"
         if L3_WARNING
-        else "🟢 **系統狀態：正常運作**"
+        else "🟢 **SYSTEM MODE：NORMAL**"
     )
 
     msg = (
-        f"{mode_line}\n"
-        f"📊 **台股 AI 5 日預測報告（{datetime.now():%Y-%m-%d}）**\n\n"
+        f"{mode}\n\n"
+        f"📊 **台股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
     )
 
     medals = ["🥇", "🥈", "🥉"]
@@ -120,18 +117,17 @@ def run():
         trend = "📈" if r["pred"] > 0 else "📉"
         medal = medals[i] if i < 3 else ""
         msg += (
-            f"{medal} **{s}**\n"
-            f"{trend} 預估 `{r['pred']:+.2%}`\n"
-            f"支撐 `{r['sup']}` / 壓力 `{r['res']}`\n\n"
+            f"{medal} {trend} **{s}**：{r['pred']:+.2%}\n"
+            f"└ 現價 {r['price']}｜支撐 {r['sup']}｜壓力 {r['res']}\n"
         )
 
-    msg += "💡 AI 為機率推估模型，僅供研究參考，非投資建議。"
+    msg += "\n💡 模型為機率推估，僅供研究參考，非投資建議。"
 
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
 
     # ===============================
-    # Save History（❌ 完全不動）
+    # Save History（僅 NORMAL）
     # ===============================
     if not L3_WARNING:
         hist = [
