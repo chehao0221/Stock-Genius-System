@@ -150,3 +150,16 @@ Stock-Genius-System/
 ├─ README.md                       # 📘 專案說明文件
 └─ LICENSE                         # 📄 授權文件（選用）
 ```
+---
+
+## 📦 Project Status
+
+This project has been **archived after a final stable run**.
+
+- Version: `v1.0-stable`
+- Mode: Observation-only (L3)
+- Horizon: Frozen
+- Last execution: YYYY-MM-DD
+
+This repository is preserved as a long-term reference of a
+fully automated, risk-first quantitative monitoring system.
