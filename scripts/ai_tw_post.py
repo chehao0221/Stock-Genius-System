@@ -1,68 +1,157 @@
 import os
-import json
+import sys
+import warnings
 import requests
+import yfinance as yf
 import pandas as pd
+from xgboost import XGBRegressor
 from datetime import datetime
 
+# ===============================
+# Base / Data
+# ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+sys.path.append(BASE_DIR)
 
-WEBHOOK = os.environ.get("DISCORD_WEBHOOK_TW")
+warnings.filterwarnings("ignore")
 
-HORIZON_PATH = os.path.join(DATA_DIR, "horizon_policy.json")
-L3_FLAG = os.path.join(DATA_DIR, "l3_warning.flag")
+# ===============================
+# Flags
+# ===============================
+L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
+L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
-def load_horizon():
-    try:
-        with open(HORIZON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("current_horizon", "5D")
-    except:
-        return "5D"
+if os.path.exists(L4_ACTIVE_FILE):
+    print("🚨 L4 active — TW AI skipped")
+    sys.exit(0)
 
-def load_data():
-    return [
-        {"symbol": "2454.TW", "pred": 2.34, "support": 1346.7, "resist": 1441.7},
-        {"symbol": "0050.TW", "pred": 0.66, "support": 62.5, "resist": 65.7},
-        {"symbol": "2330.TW", "pred": 0.11, "support": 1438.5, "resist": 1548.2},
-        {"symbol": "2317.TW", "pred": -0.31, "support": 213.8, "resist": 236.8},
-        {"symbol": "2308.TW", "pred": -4.11, "support": 893.0, "resist": 1012.0},
+L3_WARNING = os.path.exists(L3_WARNING_FILE)
+
+# ===============================
+# Settings
+# ===============================
+HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_TW", "").strip()
+HORIZON = 5  # 🔒 固定 5 日（Freeze）
+
+# ===============================
+# Utils
+# ===============================
+def calc_pivot(df):
+    r = df.iloc[-20:]
+    h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
+    p = (h + l + c) / 3
+    return round(2 * p - h, 2), round(2 * p - l, 2)
+
+# ===============================
+# Main
+# ===============================
+def run():
+    watch = [
+        "2330.TW", "2317.TW", "2454.TW",
+        "2308.TW", "2881.TW", "1301.TW", "1303.TW"
     ]
 
-def emoji_pred(v):
-    return "📈" if v > 0 else "📉"
+    data = yf.download(
+        watch,
+        period="2y",
+        auto_adjust=True,
+        group_by="ticker",
+        progress=False,
+    )
 
-def medal(rank):
-    return ["🥇", "🥈", "🥉"][rank] if rank < 3 else ""
+    feats = ["mom20", "bias", "vol_ratio"]
+    results = {}
 
-def post():
-    data = load_data()
-    horizon = load_horizon()
-    risk = "🟡 系統進入風險觀察期 (L3)" if os.path.exists(L3_FLAG) else "🟢 系統正常運作"
+    for s in watch:
+        try:
+            df = data[s].dropna()
+            if len(df) < 120:
+                continue
 
-    sorted_data = sorted(data, key=lambda x: x["pred"], reverse=True)
+            df["mom20"] = df["Close"].pct_change(20)
+            df["bias"] = (
+                df["Close"] - df["Close"].rolling(20).mean()
+            ) / df["Close"].rolling(20).mean()
+            df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+            df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
 
-    fields = []
-    for i, d in enumerate(sorted_data):
-        fields.append({
-            "name": f"{medal(i)} {d['symbol']}",
-            "value": (
-                f"{emoji_pred(d['pred'])} 預估 {d['pred']:+.2f}%\n"
-                f"支撐 {d['support']} / 壓力 {d['resist']}"
-            ),
-            "inline": True
-        })
+            train = df.iloc[:-HORIZON].dropna()
+            model = XGBRegressor(
+                n_estimators=120,
+                max_depth=3,
+                learning_rate=0.05,
+                random_state=42,
+            )
+            model.fit(train[feats], train["target"])
 
-    embed = {
-        "title": "📊 台股 AI 5 日預測報告",
-        "description": f"📅 {datetime.now().date()}\n{risk}\n🧭 Horizon：{horizon}",
-        "color": 0x2ECC71,
-        "fields": fields,
-        "footer": {
-            "text": "模型為機率推估，僅供研究參考，非投資建議。"
-        }
-    }
+            pred = float(model.predict(df[feats].iloc[-1:])[0])
+            sup, res = calc_pivot(df)
 
-    requests.post(WEBHOOK, json={"embeds": [embed]})
+            results[s.replace(".TW", "")] = {
+                "pred": pred,
+                "price": round(df["Close"].iloc[-1], 2),
+                "sup": sup,
+                "res": res,
+            }
+        except Exception:
+            continue
+
+    # ===============================
+    # Discord Display（✅ 唯一修改區）
+    # ===============================
+    mode_line = (
+        "🟡 **系統進入風險觀察期（L3）**"
+        if L3_WARNING
+        else "🟢 **系統狀態：正常運作**"
+    )
+
+    msg = (
+        f"{mode_line}\n"
+        f"📊 **台股 AI 5 日預測報告（{datetime.now():%Y-%m-%d}）**\n\n"
+    )
+
+    medals = ["🥇", "🥈", "🥉"]
+    ranked = sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True)
+
+    for i, (s, r) in enumerate(ranked):
+        trend = "📈" if r["pred"] > 0 else "📉"
+        medal = medals[i] if i < 3 else ""
+        msg += (
+            f"{medal} **{s}**\n"
+            f"{trend} 預估 `{r['pred']:+.2%}`\n"
+            f"支撐 `{r['sup']}` / 壓力 `{r['res']}`\n\n"
+        )
+
+    msg += "💡 AI 為機率推估模型，僅供研究參考，非投資建議。"
+
+    if WEBHOOK_URL:
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
+
+    # ===============================
+    # Save History（❌ 完全不動）
+    # ===============================
+    if not L3_WARNING:
+        hist = [
+            {
+                "date": datetime.now().date(),
+                "symbol": s,
+                "entry_price": r["price"],
+                "pred_ret": r["pred"],
+                "horizon": HORIZON,
+                "settled": False,
+            }
+            for s, r in results.items()
+        ]
+
+        pd.DataFrame(hist).to_csv(
+            HISTORY_FILE,
+            mode="a",
+            header=not os.path.exists(HISTORY_FILE),
+            index=False,
+        )
 
 if __name__ == "__main__":
-    post()
+    run()
