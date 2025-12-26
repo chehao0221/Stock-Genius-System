@@ -1,113 +1,118 @@
 import os
+import json
 import pandas as pd
+import requests
 from datetime import datetime
 
-# ===============================
-# Base / Data
-# ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
 TW_HISTORY = os.path.join(DATA_DIR, "tw_history.csv")
 US_HISTORY = os.path.join(DATA_DIR, "us_history.csv")
+POLICY_FILE = os.path.join(DATA_DIR, "horizon_policy.json")
 
-OUT_TW = os.path.join(DATA_DIR, "metrics_tw.csv")
-OUT_US = os.path.join(DATA_DIR, "metrics_us.csv")
-
-LOOKBACK = 0  # 0 = 全部，>0 = 最近 N 筆
+DISCORD_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 # ===============================
-# Utils
+# Config
 # ===============================
-def calc_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+HIT_RATE_WARN = 0.45
+HIT_RATE_L3 = 0.40
+CHECK_WINDOW = 20
 
-    # 自動補 hit（向下相容）
-    if "hit" not in df.columns and {"pred_ret", "real_ret"}.issubset(df.columns):
-        df["hit"] = (
-            ((df["pred_ret"] > 0) & (df["real_ret"] > 0)) |
-            ((df["pred_ret"] < 0) & (df["real_ret"] < 0))
-        )
+# ===============================
+def calc_metrics(df: pd.DataFrame):
+    df = df.dropna(subset=["real_ret", "hit"])
+    if len(df) < CHECK_WINDOW:
+        return None
 
-    df = df[df["real_ret"].notna()]
+    recent = df.tail(CHECK_WINDOW)
+    hit_rate = recent["hit"].mean()
+    avg_ret = recent["real_ret"].mean()
+    cum_ret = (1 + recent["real_ret"]).prod() - 1
 
-    if df.empty:
-        return pd.DataFrame()
+    return hit_rate, avg_ret, cum_ret
 
-    if LOOKBACK > 0:
-        df = df.tail(LOOKBACK)
+# ===============================
+def load_policy():
+    if not os.path.exists(POLICY_FILE):
+        return {"TW": 5, "US": 5}
+    return json.load(open(POLICY_FILE, "r", encoding="utf-8"))
 
-    df["cum_ret"] = (1 + df["real_ret"]).cumprod() - 1
-    peak = df["cum_ret"].cummax()
-    df["drawdown"] = df["cum_ret"] - peak
+def save_policy(policy):
+    json.dump(policy, open(POLICY_FILE, "w", encoding="utf-8"), indent=2)
 
-    metrics = {
-        "date": datetime.now().date(),
-        "trades": len(df),
-        "hit_rate": round(df["hit"].mean(), 4),
-        "avg_return": round(df["real_ret"].mean(), 4),
-        "cum_return": round(df["cum_ret"].iloc[-1], 4),
-        "max_drawdown": round(df["drawdown"].min(), 4),
+# ===============================
+def process_market(label, path, policy):
+    if not os.path.exists(path):
+        return None
+
+    df = pd.read_csv(path)
+    metrics = calc_metrics(df)
+    if not metrics:
+        return None
+
+    hit, avg, cum = metrics
+    horizon = policy[label]
+
+    status = "NORMAL"
+    if hit < HIT_RATE_L3:
+        status = "L3"
+        policy[label] = max(3, horizon - 2)
+    elif hit < HIT_RATE_WARN:
+        policy[label] = max(3, horizon - 1)
+
+    return {
+        "market": label,
+        "hit": hit,
+        "avg": avg,
+        "cum": cum,
+        "horizon": policy[label],
+        "status": status,
     }
 
-    return pd.DataFrame([metrics])
-
-
 # ===============================
-# Main
-# ===============================
-def run_one(history_path: str, out_path: str, label: str):
-    if not os.path.exists(history_path):
-        print(f"⚠️ {label} history not found, skip")
-        return
-
-    df = pd.read_csv(history_path)
-
-    if not {"real_ret", "pred_ret"}.issubset(df.columns):
-        print(f"⚠️ {label} history not settled yet, skip")
-        return
-
-    # Horizon-aware
-    if "horizon" in df.columns:
-        for h in sorted(df["horizon"].dropna().unique()):
-            sub = df[df["horizon"] == h]
-            metrics = calc_metrics(sub)
-            if metrics.empty:
-                continue
-
-            metrics["market"] = label
-            metrics["horizon"] = int(h)
-
-            metrics.to_csv(
-                out_path,
-                mode="a",
-                header=not os.path.exists(out_path),
-                index=False,
-            )
-
-            print(f"✅ {label} | Horizon {h} metrics updated")
-    else:
-        metrics = calc_metrics(df)
-        if metrics.empty:
-            return
-
-        metrics["market"] = label
-        metrics["horizon"] = "NA"
-
-        metrics.to_csv(
-            out_path,
-            mode="a",
-            header=not os.path.exists(out_path),
-            index=False,
-        )
-
-        print(f"✅ {label} metrics updated")
-
-
 def main():
-    run_one(TW_HISTORY, OUT_TW, "TW")
-    run_one(US_HISTORY, OUT_US, "US")
+    policy = load_policy()
+    reports = []
 
+    for label, path in [("TW", TW_HISTORY), ("US", US_HISTORY)]:
+        r = process_market(label, path, policy)
+        if r:
+            reports.append(r)
+
+    save_policy(policy)
+
+    if not DISCORD_URL or not reports:
+        return
+
+    fields = []
+    color = 0x2ECC71
+
+    for r in reports:
+        if r["status"] == "L3":
+            color = 0xF1C40F
+
+        fields.append({
+            "name": f"{r['market']} 市場",
+            "value": (
+                f"🎯 命中率：`{r['hit']:.2%}`\n"
+                f"📈 平均報酬：`{r['avg']:.2%}`\n"
+                f"💰 累積報酬：`{r['cum']:.2%}`\n"
+                f"⏱ Horizon：`{r['horizon']} 日`"
+            ),
+            "inline": True
+        })
+
+    embed = {
+        "title": "📊 AI 績效 Dashboard",
+        "description": f"最近 {CHECK_WINDOW} 筆交易統計",
+        "color": color,
+        "fields": fields,
+        "footer": {"text": "Stock-Genius-System · 自動績效監控"}
+    }
+
+    requests.post(DISCORD_URL, json={"embeds": [embed]}, timeout=15)
 
 if __name__ == "__main__":
     main()
