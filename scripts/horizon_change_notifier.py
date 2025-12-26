@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -18,22 +19,33 @@ def main():
     current = json.load(open(POLICY_FILE, "r", encoding="utf-8"))
     prev = json.load(open(SNAPSHOT_FILE, "r", encoding="utf-8")) if os.path.exists(SNAPSHOT_FILE) else {}
 
-    changes = []
+    fields = []
     for market, new_h in current.items():
         old_h = prev.get(market)
         if old_h != new_h:
-            changes.append((market.upper(), old_h, new_h))
-
-    if changes:
-        msg = "🚨 **預測週期（Horizon）自動調整通知**\n\n"
-        for m, old, new in changes:
-            if old is None:
-                msg += f"- {m}：啟用 **{new} 日預測週期**\n"
+            if old_h is None:
+                value = f"啟用 **{new_h} 日預測週期**"
             else:
-                msg += f"- {m}：由 {old} 日 → **{new} 日**\n"
+                value = f"{old_h} 日 → **{new_h} 日**"
 
-        msg += "\n📌 原因：近期命中率下降，系統自動進行風險保守調整"
-        requests.post(WEBHOOK, json={"content": msg[:1900]}, timeout=15)
+            fields.append({
+                "name": market.upper(),
+                "value": value,
+                "inline": True,
+            })
+
+    if fields:
+        embed = {
+            "title": "🚨 預測週期（Horizon）自動調整通知",
+            "color": 0xF1C40F,
+            "fields": fields,
+            "footer": {
+                "text": "系統因命中率惡化自動進行風險保守調整",
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+        requests.post(WEBHOOK, json={"embeds": [embed]}, timeout=15)
 
     json.dump(current, open(SNAPSHOT_FILE, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
 
