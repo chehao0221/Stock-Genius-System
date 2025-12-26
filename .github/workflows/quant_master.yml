@@ -1,102 +1,43 @@
-name: Quant Intelligence Master
+name: Stock Genius Master
 
 on:
   schedule:
-    - cron: '0 * * * *'
-    - cron: '30 07 * * 1-5'
-    - cron: '00 22 * * 1-5'
+    - cron: "30 00 * * *"  # 台股盤前
+    - cron: "30 13 * * *"  # 美股盤前
   workflow_dispatch:
 
 jobs:
-  quant_tasks:
+  run-system:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-          cache: 'pip'
+          python-version: "3.11"
 
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
 
-      - name: Execute Task
+      - name: Run News Radar
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
-          BLACK_SWAN_WEBHOOK_URL: ${{ secrets.BLACK_SWAN_WEBHOOK_URL }}
-          L4_ACTIVE_FILE: data/l4_active.flag
+          DISCORD_WEBHOOK_TW: ${{ secrets.DISCORD_WEBHOOK_TW }}
+          DISCORD_WEBHOOK_US: ${{ secrets.DISCORD_WEBHOOK_US }}
         run: |
-          HOUR=$(date +%H)
-          MINUTE=$(date +%M)
-          NOW_TS=$(date +%s)
-          OBS_FILE="data/l4_last_end.flag"
+          python scripts/news_radar.py
 
-          echo "🕒 UTC $HOUR:$MINUTE | Event: ${{ github.event_name }}"
-
-          SYSTEM_MODE="🟢 系統狀態：正常運作"
-
-          if [ -f "$L4_ACTIVE_FILE" ]; then
-            SYSTEM_MODE="🔴 系統狀態：黑天鵝防禦模式"
-          elif [ -f "$OBS_FILE" ]; then
-            LAST_END=$(cat $OBS_FILE || echo 0)
-            DIFF=$((NOW_TS - LAST_END))
-            if [ "$DIFF" -lt 86400 ]; then
-              SYSTEM_MODE="🟠 系統狀態：風險觀察期"
-            fi
-          fi
-
-          echo "$SYSTEM_MODE"
-
-          # 🔔 Discord 每日系統狀態同步（UTC 00:00）
-          if [ "$HOUR" == "00" ] && [ "$MINUTE" == "00" ]; then
-            if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-              curl -s -X POST "$DISCORD_WEBHOOK_URL" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"content\": \"🧠 **量化系統每日狀態回報**\\n$SYSTEM_MODE\\n\\n📌 提醒：僅為風險與市場監控，非投資建議\\n🕒 UTC $(date '+%Y-%m-%d %H:%M')\"
-                }"
-            fi
-          fi
-
-          # 1. 新聞雷達
-          if [ "$MINUTE" == "00" ] || [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
-            python scripts/news_radar.py
-          fi
-
-          # 2. AI 分析
-          if [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
-            python scripts/ai_tw_post.py
-            python scripts/ai_us_post.py
-          else
-            if [ \"$HOUR\" == \"07\" ] && [ \"$MINUTE\" == \"30\" ]; then
-              python scripts/ai_tw_post.py
-            elif [ \"$HOUR\" == \"22\" ] && [ \"$MINUTE\" == \"00\" ]; then
-              python scripts/ai_us_post.py
-            fi
-          fi
-
-      - name: Commit and Push
+      - name: Run TW Stock AI
+        env:
+          DISCORD_WEBHOOK_TW: ${{ secrets.DISCORD_WEBHOOK_TW }}
         run: |
-          if [ -f data/l4_active.flag ]; then
-            echo "🚨 L4 active — skip commit & push"
-            exit 0
-          fi
+          python scripts/ai_tw_post.py
 
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add data/
-
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Update history and cache [skip ci]"
-            git push
-          fi
+      - name: Run US Stock AI
+        env:
+          DISCORD_WEBHOOK_US: ${{ secrets.DISCORD_WEBHOOK_US }}
+        run: |
+          python scripts/ai_us_post.py
