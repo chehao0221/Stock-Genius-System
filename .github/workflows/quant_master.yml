@@ -1,14 +1,14 @@
-name: Quant Intelligence Master
+name: Quant Intelligence Master (v1.0-stable)
 
 on:
   schedule:
-    # 每小時：新聞 / 系統狀態
+    # ⏰ 每小時：新聞 / 風險監控
     - cron: '0 * * * *'
 
-    # 台股（UTC 07:30 = 台北 15:30）
+    # 🇹🇼 台股 AI（平日 15:30 TST = 07:30 UTC）
     - cron: '30 07 * * 1-5'
 
-    # 美股（UTC 22:00 = 台北 06:00）
+    # 🇺🇸 美股 AI（平日 06:00 TST = 22:00 UTC）
     - cron: '00 22 * * 1-5'
 
   workflow_dispatch:
@@ -20,10 +20,16 @@ jobs:
       contents: write
 
     steps:
+      # ===============================
+      # Checkout
+      # ===============================
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # ===============================
+      # Python
+      # ===============================
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -31,15 +37,19 @@ jobs:
           cache: 'pip'
 
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
 
+      # ===============================
+      # Execute Core System
+      # ===============================
       - name: Execute Quant System
         env:
-          # 🧠 AI 頻道（分市場）
+          # 🇹🇼 / 🇺🇸 AI 頻道（分市場）
           DISCORD_WEBHOOK_TW: ${{ secrets.DISCORD_WEBHOOK_TW }}
           DISCORD_WEBHOOK_US: ${{ secrets.DISCORD_WEBHOOK_US }}
 
-          # 🔔 系統 / 新聞 / Dashboard（共用）
+          # 🔔 系統 / 新聞 / 黑天鵝（共用）
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NEWS_WEBHOOK_URL: ${{ secrets.NEWS_WEBHOOK_URL }}
           BLACK_SWAN_WEBHOOK_URL: ${{ secrets.BLACK_SWAN_WEBHOOK_URL }}
@@ -47,6 +57,8 @@ jobs:
           L4_ACTIVE_FILE: data/l4_active.flag
 
         run: |
+          set -e
+
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
           NOW_TS=$(date +%s)
@@ -68,52 +80,49 @@ jobs:
 
           echo "$SYSTEM_MODE"
 
-          # =========================
-          # 🔔 每日系統狀態回報（UTC 00:00）
-          # =========================
-          if [ "$HOUR" == "00" ] && [ "$MINUTE" == "00" ]; then
+          # ===============================
+          # 🔔 每日系統狀態同步（UTC 00:00）
+          # ===============================
+          if [ "$HOUR" = "00" ] && [ "$MINUTE" = "00" ]; then
             if [ -n "$DISCORD_WEBHOOK_URL" ]; then
               curl -s -X POST "$DISCORD_WEBHOOK_URL" \
                 -H "Content-Type: application/json" \
                 -d "{
-                  \"content\": \"🧠 **量化系統每日狀態回報**\\n$SYSTEM_MODE\\n\\n📌 僅為風險與市場監控，非投資建議\\n🕒 UTC $(date '+%Y-%m-%d %H:%M')\"
+                  \"content\": \"🧠 **量化系統每日狀態回報**\\n$SYSTEM_MODE\\n\\n📌 模型為機率推估，僅供研究參考，非投資建議。\\n🕒 UTC $(date '+%Y-%m-%d %H:%M')\"
                 }"
             fi
           fi
 
-          # =========================
-          # 1️⃣ 新聞雷達（每小時）
-          # =========================
-          if [ "$MINUTE" == "00" ] || [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
+          # ===============================
+          # 1️⃣ 新聞雷達（每小時 / 手動）
+          # ===============================
+          if [ "$MINUTE" = "00" ] || [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then
             python scripts/news_radar.py
           fi
 
-          # =========================
-          # 2️⃣ AI 分析（依市場）
-          # =========================
-          if [ \"${{ github.event_name }}\" == \"workflow_dispatch\" ]; then
+          # ===============================
+          # 2️⃣ AI 分析（不改行為）
+          # ===============================
+          if [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            if [ \"$HOUR\" == \"07\" ] && [ \"$MINUTE\" == \"30\" ]; then
+            if [ "$HOUR" = "07" ] && [ "$MINUTE" = "30" ]; then
               python scripts/ai_tw_post.py
-            elif [ \"$HOUR\" == \"22\" ] && [ \"$MINUTE\" == \"00\" ]; then
+            elif [ "$HOUR" = "22" ] && [ "$MINUTE" = "00" ]; then
               python scripts/ai_us_post.py
             fi
           fi
 
-          # =========================
-          # 3️⃣ 績效 Dashboard（每日一次）
-          # UTC 23:00 執行
-          # =========================
-          if [ \"$HOUR\" == \"23\" ] && [ \"$MINUTE\" == \"00\" ]; then
-            python scripts/performance_dashboard.py
-          fi
+          # ===============================
+          # 3️⃣ 績效觀測（Lv1 / Lv1.5）
+          # ===============================
+          python scripts/performance_dashboard.py || true
 
-      # =========================
-      # Commit & Push（非 L4）
-      # =========================
-      - name: Commit and Push
+      # ===============================
+      # Commit & Push（資料 only）
+      # ===============================
+      - name: Commit and Push Data
         run: |
           if [ -f data/l4_active.flag ]; then
             echo "🚨 L4 active — skip commit & push"
@@ -122,11 +131,12 @@ jobs:
 
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
+
           git add data/
 
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "No data changes to commit"
           else
-            git commit -m "Update system data & metrics [skip ci]"
+            git commit -m "Update system data [v1.0-stable]"
             git push
           fi
