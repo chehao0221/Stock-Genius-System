@@ -33,16 +33,6 @@ def plot_equity(df, title, path):
     return True
 
 
-def send_image(path, title):
-    with open(path, "rb") as f:
-        requests.post(
-            WEBHOOK,
-            files={"file": (os.path.basename(path), f)},
-            data={"content": title},
-            timeout=30,
-        )
-
-
 def main():
     if not WEBHOOK:
         return
@@ -54,8 +44,26 @@ def main():
         df = pd.read_csv(file)
         img = os.path.join(DATA_DIR, f"equity_{market}.png")
 
-        if plot_equity(df, f"{market}｜AI 權益曲線（Equity Curve）", img):
-            send_image(img, f"📈 **{market} AI 權益曲線**")
+        if not plot_equity(df, f"{market}｜AI 權益曲線", img):
+            continue
+
+        embed = {
+            "title": f"📈 {market}｜AI 權益曲線",
+            "color": 0x3498DB,
+            "footer": {
+                "text": "Equity Curve · 累積報酬視覺化",
+            },
+        }
+
+        with open(img, "rb") as f:
+            requests.post(
+                WEBHOOK,
+                data={"payload_json": str({"embeds": [embed]}).replace("'", '"')},
+                files={"file": f},
+                timeout=30,
+            )
+
+    print("✅ 已推播 Equity Curve（Embed）")
 
 
 if __name__ == "__main__":
