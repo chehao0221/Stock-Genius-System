@@ -24,7 +24,7 @@ L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
 if os.path.exists(L4_ACTIVE_FILE):
-    print("🚨 L4 active — US AI analysis skipped")
+    print("🚨 L4 active — US AI skipped")
     sys.exit(0)
 
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
@@ -34,11 +34,14 @@ L3_WARNING = os.path.exists(L3_WARNING_FILE)
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
 
-# ✅ 美股專屬頻道（自動 fallback）
 WEBHOOK_URL = (
     os.getenv("DISCORD_WEBHOOK_US")
     or os.getenv("DISCORD_WEBHOOK_URL", "")
 ).strip()
+
+# 🧠 Horizon 設定（與台股一致）
+HORIZONS = [3, 5, 10]
+MAIN_H = 3 if L3_WARNING else 5
 
 # ===============================
 # Utils
@@ -60,6 +63,39 @@ def get_sp500():
     except Exception:
         return []
 
+def settle_history(price_data):
+    if not os.path.exists(HISTORY_FILE):
+        return
+
+    hist = pd.read_csv(HISTORY_FILE)
+    if "exit_price" not in hist.columns:
+        hist["exit_price"] = None
+        hist["real_ret"] = None
+        hist["hit"] = None
+
+    for i, r in hist.iterrows():
+        if pd.notna(r["exit_price"]):
+            continue
+
+        symbol = r["symbol"]
+        horizon = int(r.get("horizon", 5))
+        entry_date = pd.to_datetime(r["date"])
+
+        if symbol not in price_data:
+            continue
+
+        df = price_data[symbol]
+        future = df[df.index >= entry_date]
+
+        if len(future) > horizon:
+            exit_price = future.iloc[horizon]["Close"]
+            real_ret = exit_price / r["entry_price"] - 1
+            hist.loc[i, "exit_price"] = round(exit_price, 2)
+            hist.loc[i, "real_ret"] = round(real_ret, 4)
+            hist.loc[i, "hit"] = (real_ret * r["pred_ret"]) > 0
+
+    hist.to_csv(HISTORY_FILE, index=False)
+
 # ===============================
 # Main
 # ===============================
@@ -76,6 +112,9 @@ def run():
         progress=False,
     )
 
+    # 🔁 自動結算歷史績效
+    settle_history(data)
+
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
 
@@ -90,23 +129,25 @@ def run():
                 df["Close"] - df["Close"].rolling(20).mean()
             ) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
-            df["target"] = df["Close"].shift(-5) / df["Close"] - 1
 
-            train = df.iloc[:-5].dropna()
-            model = XGBRegressor(
-                n_estimators=120,
-                max_depth=3,
-                learning_rate=0.05,
-                random_state=42,
-            )
-            model.fit(train[feats], train["target"])
+            preds = {}
+            for h in HORIZONS:
+                df["target"] = df["Close"].shift(-h) / df["Close"] - 1
+                train = df.iloc[:-h].dropna()
 
-            pred = float(model.predict(df[feats].iloc[-1:])[0])
+                model = XGBRegressor(
+                    n_estimators=120,
+                    max_depth=3,
+                    learning_rate=0.05,
+                    random_state=42,
+                )
+                model.fit(train[feats], train["target"])
+                preds[h] = float(model.predict(df[feats].iloc[-1:])[0])
+
             sup, res = calc_pivot(df)
-
             results[s] = {
-                "pred": pred,
                 "price": round(df["Close"].iloc[-1], 2),
+                "preds": preds,
                 "sup": sup,
                 "res": res,
             }
@@ -119,7 +160,7 @@ def run():
         else "🟢 **SYSTEM MODE：NORMAL**"
     )
 
-    msg = f"{mode}\n\n📊 **美股 AI 進階預測報告 ({datetime.now():%Y-%m-%d})**\n"
+    msg = f"{mode}\n\n📊 **美股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n"
     msg += "------------------------------------------\n\n"
 
     medals = ["🥇", "🥈", "🥉", "📈", "📈"]
@@ -128,34 +169,36 @@ def run():
     if not L3_WARNING:
         horses = {
             k: v for k, v in results.items()
-            if k not in mag7 and v["pred"] > 0
+            if k not in mag7 and v["preds"][MAIN_H] > 0
         }
         top_5 = sorted(
             horses,
-            key=lambda x: horses[x]["pred"],
+            key=lambda x: horses[x]["preds"][MAIN_H],
             reverse=True,
         )[:5]
 
-        msg += "🏆 **AI 海選 Top 5 (潛力股)**\n"
+        msg += "🏆 **AI 海選 Top 5（主 Horizon）**\n"
         for i, s in enumerate(top_5):
             r = results[s]
-            msg += f"{medals[i]} {s}: 預估 `{r['pred']:+.2%}`\n"
+            p = r["preds"][MAIN_H]
+            msg += f"{medals[i]} {s}: `{p:+.2%}`（{MAIN_H}日）\n"
             msg += (
-                f" └ 現價: `{r['price']:.2f}` "
-                f"(支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+                f" └ 現價 `{r['price']}` "
+                f"(支撐 `{r['sup']}` / 壓力 `{r['res']}`)\n"
             )
         msg += "\n"
     else:
-        msg += "⚠️ 觀察 / 預警期中，暫停 AI 海選潛力股\n\n"
+        msg += "⚠️ L3 觀察期，暫停潛力股海選\n\n"
 
-    msg += "💎 **Magnificent 7 監控 (固定顯示)**\n"
+    msg += "💎 **Magnificent 7（固定監控）**\n"
     for s in mag7:
         if s in results:
             r = results[s]
-            msg += f"{s}: 預估 `{r['pred']:+.2%}`\n"
+            p = r["preds"][MAIN_H]
+            msg += f"{s}: `{p:+.2%}`（{MAIN_H}日）\n"
             msg += (
-                f" └ 現價: `{r['price']:.2f}` "
-                f"(支撐: `{r['sup']}` / 壓力: `{r['res']}`)\n"
+                f" └ 現價 `{r['price']}` "
+                f"(支撐 `{r['sup']}` / 壓力 `{r['res']}`)\n"
             )
 
     msg += "\n💡 AI 為機率模型，僅供研究參考"
@@ -169,21 +212,22 @@ def run():
     else:
         print(msg)
 
+    # 📝 寫入歷史（僅 NORMAL）
     if not L3_WARNING:
-        hist = [
-            {
-                "date": datetime.now().date(),
-                "symbol": s,
-                "entry_price": results[s]["price"],
-                "pred_ret": results[s]["pred"],
-                "settled": False,
-            }
-            for s in (top_5 + mag7)
-            if s in results
-        ]
+        rows = []
+        for s in (top_5 + mag7):
+            if s in results:
+                rows.append({
+                    "date": datetime.now().date(),
+                    "symbol": s,
+                    "entry_price": results[s]["price"],
+                    "pred_ret": results[s]["preds"][MAIN_H],
+                    "horizon": MAIN_H,
+                    "settled": False,
+                })
 
-        if hist:
-            pd.DataFrame(hist).to_csv(
+        if rows:
+            pd.DataFrame(rows).to_csv(
                 HISTORY_FILE,
                 mode="a",
                 header=not os.path.exists(HISTORY_FILE),
