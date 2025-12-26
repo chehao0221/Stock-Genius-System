@@ -1,7 +1,4 @@
-import os
-import sys
-import warnings
-import requests
+import os, sys, warnings, requests, json
 import yfinance as yf
 import pandas as pd
 from xgboost import XGBRegressor
@@ -18,10 +15,11 @@ sys.path.append(BASE_DIR)
 warnings.filterwarnings("ignore")
 
 # ===============================
-# 🔴 L4 / 🟡 L3 FLAGS
+# Flags
 # ===============================
 L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
+HORIZON_POLICY = os.path.join(DATA_DIR, "horizon_policy.json")
 
 if os.path.exists(L4_ACTIVE_FILE):
     print("🚨 L4 active — US AI skipped")
@@ -30,18 +28,31 @@ if os.path.exists(L4_ACTIVE_FILE):
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
 
 # ===============================
+# Horizon Resolver
+# ===============================
+def resolve_horizon():
+    if os.path.exists(HORIZON_POLICY):
+        try:
+            with open(HORIZON_POLICY, "r") as f:
+                policy = json.load(f)
+            h = policy.get("us", {}).get("best")
+            if h:
+                return int(h)
+        except Exception:
+            pass
+    return 3 if L3_WARNING else 5
+
+MAIN_H = resolve_horizon()
+HORIZONS = sorted(set([3, 5, 10, MAIN_H]))
+
+# ===============================
 # Settings
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
-
 WEBHOOK_URL = (
     os.getenv("DISCORD_WEBHOOK_US")
     or os.getenv("DISCORD_WEBHOOK_URL", "")
 ).strip()
-
-# 🧠 Horizon 設定（與台股一致）
-HORIZONS = [3, 5, 10]
-MAIN_H = 3 if L3_WARNING else 5
 
 # ===============================
 # Utils
@@ -54,66 +65,30 @@ def calc_pivot(df):
 
 def get_sp500():
     try:
+        import requests
         headers = {"User-Agent": "Mozilla/5.0"}
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         df = pd.read_html(
-            requests.get(url, headers=headers, timeout=10).text
+            requests.get(
+                "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+                headers=headers,
+                timeout=10,
+            ).text
         )[0]
         return [s.replace(".", "-") for s in df["Symbol"]]
-    except Exception:
+    except:
         return []
-
-def settle_history(price_data):
-    if not os.path.exists(HISTORY_FILE):
-        return
-
-    hist = pd.read_csv(HISTORY_FILE)
-    if "exit_price" not in hist.columns:
-        hist["exit_price"] = None
-        hist["real_ret"] = None
-        hist["hit"] = None
-
-    for i, r in hist.iterrows():
-        if pd.notna(r["exit_price"]):
-            continue
-
-        symbol = r["symbol"]
-        horizon = int(r.get("horizon", 5))
-        entry_date = pd.to_datetime(r["date"])
-
-        if symbol not in price_data:
-            continue
-
-        df = price_data[symbol]
-        future = df[df.index >= entry_date]
-
-        if len(future) > horizon:
-            exit_price = future.iloc[horizon]["Close"]
-            real_ret = exit_price / r["entry_price"] - 1
-            hist.loc[i, "exit_price"] = round(exit_price, 2)
-            hist.loc[i, "real_ret"] = round(real_ret, 4)
-            hist.loc[i, "hit"] = (real_ret * r["pred_ret"]) > 0
-
-    hist.to_csv(HISTORY_FILE, index=False)
 
 # ===============================
 # Main
 # ===============================
 def run():
     mag7 = ["AAPL", "NVDA", "TSLA", "MSFT", "GOOGL", "AMZN", "META"]
-
     watch = mag7 if L3_WARNING else list(dict.fromkeys(mag7 + get_sp500()))
 
     data = yf.download(
-        watch,
-        period="2y",
-        auto_adjust=True,
-        group_by="ticker",
-        progress=False,
+        watch, period="2y", auto_adjust=True,
+        group_by="ticker", progress=False
     )
-
-    # 🔁 自動結算歷史績效
-    settle_history(data)
 
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
@@ -125,21 +100,16 @@ def run():
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (
-                df["Close"] - df["Close"].rolling(20).mean()
-            ) / df["Close"].rolling(20).mean()
+            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
 
             preds = {}
             for h in HORIZONS:
                 df["target"] = df["Close"].shift(-h) / df["Close"] - 1
                 train = df.iloc[:-h].dropna()
-
                 model = XGBRegressor(
-                    n_estimators=120,
-                    max_depth=3,
-                    learning_rate=0.05,
-                    random_state=42,
+                    n_estimators=120, max_depth=3,
+                    learning_rate=0.05, random_state=42
                 )
                 model.fit(train[feats], train["target"])
                 preds[h] = float(model.predict(df[feats].iloc[-1:])[0])
@@ -147,92 +117,37 @@ def run():
             sup, res = calc_pivot(df)
             results[s] = {
                 "price": round(df["Close"].iloc[-1], 2),
-                "preds": preds,
+                "pred": preds[MAIN_H],
                 "sup": sup,
                 "res": res,
             }
-        except Exception:
+        except:
             continue
 
-    mode = (
-        "🟡 **SYSTEM MODE：RISK WARNING (L3)**"
-        if L3_WARNING
-        else "🟢 **SYSTEM MODE：NORMAL**"
-    )
+    mode = "🟡 **SYSTEM MODE：RISK WARNING (L3)**" if L3_WARNING else "🟢 **SYSTEM MODE：NORMAL**"
+    msg = f"{mode}\n\n📊 **美股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
 
-    msg = f"{mode}\n\n📊 **美股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n"
-    msg += "------------------------------------------\n\n"
-
-    medals = ["🥇", "🥈", "🥉", "📈", "📈"]
-
-    top_5 = []
-    if not L3_WARNING:
-        horses = {
-            k: v for k, v in results.items()
-            if k not in mag7 and v["preds"][MAIN_H] > 0
-        }
-        top_5 = sorted(
-            horses,
-            key=lambda x: horses[x]["preds"][MAIN_H],
-            reverse=True,
-        )[:5]
-
-        msg += "🏆 **AI 海選 Top 5（主 Horizon）**\n"
-        for i, s in enumerate(top_5):
-            r = results[s]
-            p = r["preds"][MAIN_H]
-            msg += f"{medals[i]} {s}: `{p:+.2%}`（{MAIN_H}日）\n"
-            msg += (
-                f" └ 現價 `{r['price']}` "
-                f"(支撐 `{r['sup']}` / 壓力 `{r['res']}`)\n"
-            )
-        msg += "\n"
-    else:
-        msg += "⚠️ L3 觀察期，暫停潛力股海選\n\n"
-
-    msg += "💎 **Magnificent 7（固定監控）**\n"
-    for s in mag7:
-        if s in results:
-            r = results[s]
-            p = r["preds"][MAIN_H]
-            msg += f"{s}: `{p:+.2%}`（{MAIN_H}日）\n"
-            msg += (
-                f" └ 現價 `{r['price']}` "
-                f"(支撐 `{r['sup']}` / 壓力 `{r['res']}`)\n"
-            )
-
-    msg += "\n💡 AI 為機率模型，僅供研究參考"
+    for s, r in results.items():
+        msg += f"{s}: `{r['pred']:+.2%}`（{MAIN_H}日）\n"
 
     if WEBHOOK_URL:
-        requests.post(
-            WEBHOOK_URL,
-            json={"content": msg[:1900]},
-            timeout=15,
-        )
-    else:
-        print(msg)
+        requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
 
-    # 📝 寫入歷史（僅 NORMAL）
     if not L3_WARNING:
-        rows = []
-        for s in (top_5 + mag7):
-            if s in results:
-                rows.append({
-                    "date": datetime.now().date(),
-                    "symbol": s,
-                    "entry_price": results[s]["price"],
-                    "pred_ret": results[s]["preds"][MAIN_H],
-                    "horizon": MAIN_H,
-                    "settled": False,
-                })
+        rows = [{
+            "date": datetime.now().date(),
+            "symbol": s,
+            "entry_price": r["price"],
+            "pred_ret": r["pred"],
+            "horizon": MAIN_H,
+            "settled": False,
+        } for s, r in results.items()]
 
-        if rows:
-            pd.DataFrame(rows).to_csv(
-                HISTORY_FILE,
-                mode="a",
-                header=not os.path.exists(HISTORY_FILE),
-                index=False,
-            )
+        pd.DataFrame(rows).to_csv(
+            HISTORY_FILE, mode="a",
+            header=not os.path.exists(HISTORY_FILE),
+            index=False,
+        )
 
 if __name__ == "__main__":
     run()
