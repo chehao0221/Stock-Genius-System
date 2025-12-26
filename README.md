@@ -1,3 +1,9 @@
+## 🔒 Release Status
+
+- Current Stable Version: **v1.0-stable**
+- Policy: **Observation-only (no behavior change)**
+
+
 # 🧠 Stock-Genius-System
 
 > 一套可長期運行、具備自我風控與績效回饋閉環的量化 AI 投資分析系統
