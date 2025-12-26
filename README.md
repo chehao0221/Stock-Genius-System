@@ -60,7 +60,7 @@
 - `l4_postmortem_report.py`
 
 ---
-
+```text
 Stock-Genius-System/
 │
 ├─ .github/
