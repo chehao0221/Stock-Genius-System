@@ -2,10 +2,11 @@ import os
 import sys
 import warnings
 import requests
-import yfinance as yf
 import pandas as pd
 from xgboost import XGBRegressor
 from datetime import datetime
+
+from scripts.safe_yfinance import safe_download
 
 # ===============================
 # Base / Data
@@ -33,7 +34,7 @@ L3_WARNING = os.path.exists(L3_WARNING_FILE)
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_TW", "").strip()
-HORIZON = 5  # 🔒 Freeze 固定 5 日
+HORIZON = 5  # 🔒 Freeze
 
 # ===============================
 # Utils
@@ -48,16 +49,12 @@ def calc_pivot(df):
 # Main
 # ===============================
 def run():
-    # ⚠️ 這裡維持你原本的台股監控清單（未更動）
     watch = ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2412.TW"]
 
-    data = yf.download(
-        watch,
-        period="2y",
-        auto_adjust=True,
-        group_by="ticker",
-        progress=False,
-    )
+    data = safe_download(watch)
+    if data is None:
+        print("[INFO] Skip TW AI run due to Yahoo Finance failure")
+        return
 
     feats = ["mom20", "bias", "vol_ratio"]
     results = {}
@@ -69,9 +66,7 @@ def run():
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (
-                df["Close"] - df["Close"].rolling(20).mean()
-            ) / df["Close"].rolling(20).mean()
+            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
             df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
 
@@ -96,19 +91,19 @@ def run():
         except Exception:
             continue
 
+    if not results:
+        return
+
     # ===============================
-    # Discord Message（DISPLAY ONLY）
+    # Discord Message
     # ===============================
     date_str = datetime.now().strftime("%Y-%m-%d")
-
-    msg = (
-        f"📊 台股 AI 進階預測報告 ({date_str})\n"
-        f"------------------------------------------\n\n"
-    )
+    msg = f"📊 台股 AI 進階預測報告 ({date_str})\n" \
+          f"------------------------------------------\n\n"
 
     ranked = sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True)
-
     msg += "👁 台股核心監控（固定顯示）\n"
+
     for s, r in ranked:
         emoji = "📈" if r["pred"] > 0 else "📉"
         symbol = s.replace(".TW", "")
@@ -120,18 +115,14 @@ def run():
     msg += (
         "\n------------------------------------------\n"
         "📊 台股｜近 5 日回測結算（歷史觀測）\n\n"
-        "📌 本結算僅為歷史統計觀測，不影響任何即時預測或系統行為\n\n"
         "💡 模型為機率推估，僅供研究參考，非投資建議。"
     )
 
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
 
-    # ===============================
-    # Save History（僅 NORMAL）
-    # ===============================
     if not L3_WARNING:
-        hist = [
+        pd.DataFrame([
             {
                 "date": datetime.now().date(),
                 "symbol": s.replace(".TW", ""),
@@ -141,9 +132,7 @@ def run():
                 "settled": False,
             }
             for s, r in results.items()
-        ]
-
-        pd.DataFrame(hist).to_csv(
+        ]).to_csv(
             HISTORY_FILE,
             mode="a",
             header=not os.path.exists(HISTORY_FILE),
