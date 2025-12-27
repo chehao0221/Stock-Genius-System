@@ -18,7 +18,6 @@ on:
 
   workflow_dispatch:
 
-
 jobs:
   quant_tasks:
     runs-on: ubuntu-latest
@@ -47,7 +46,7 @@ jobs:
           pip install -r requirements.txt
 
       # ===============================
-      # Execute Core System
+      # Execute Quant System
       # ===============================
       - name: Execute Quant System
         env:
@@ -67,6 +66,7 @@ jobs:
 
           HOUR=$(date +%H)
           MINUTE=$(date +%M)
+          WEEKDAY=$(date +%u)   # 1=Mon ... 7=Sun
           NOW_TS=$(date +%s)
           OBS_FILE="data/l4_last_end.flag"
 
@@ -99,10 +99,12 @@ jobs:
             fi
           fi
 
-                    # ===============================
-          # 🔍 Explorer 股池週更（只在週更 cron 或手動）
           # ===============================
-          if [ "$HOUR" = "18" ] && [ "$MINUTE" -le 10 ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # 🔍 Explorer 股池週更（Top 500 成交量）
+          # 只在「週日 UTC 18:00 ±10 分鐘」或手動執行
+          # ===============================
+          if { [ "$WEEKDAY" = "7" ] && [ "$HOUR" = "18" ] && [ "$MINUTE" -le 10 ]; } \
+             || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "🔍 Updating Explorer pools..."
             python scripts/update_tw_explorer_pool.py
             python scripts/update_us_explorer_pool.py
