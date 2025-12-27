@@ -221,3 +221,14 @@ damages, or decisions made based on the use of this software.
 Users are solely responsible for understanding the risks associated with
 financial markets and for complying with all applicable laws and regulations
 in their respective jurisdictions.
+
+---
+
+### Legal Notice
+
+This repository is licensed under a **Research-Only Software License**.
+
+Any use of this project for real-world trading, investment decision-making,
+commercial services, or financial advice is strictly prohibited.
+
+See the LICENSE file for full legal terms.
