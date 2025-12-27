@@ -99,6 +99,15 @@ jobs:
             fi
           fi
 
+                    # ===============================
+          # 🔍 Explorer 股池週更（只在週更 cron 或手動）
+          # ===============================
+          if [ "$HOUR" = "18" ] && [ "$MINUTE" -le 10 ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "🔍 Updating Explorer pools..."
+            python scripts/update_tw_explorer_pool.py
+            python scripts/update_us_explorer_pool.py
+          fi
+
           # ===============================
           # 1️⃣ 新聞雷達（每小時 ±10 分鐘 / 手動）
           # ===============================
