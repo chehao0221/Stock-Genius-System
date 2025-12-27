@@ -82,9 +82,9 @@ jobs:
           echo "$SYSTEM_MODE"
 
           # ===============================
-          # 🔔 每日系統狀態同步（UTC 00:00）
+          # 🔔 每日系統狀態同步（UTC 00:00 ±10 分鐘）
           # ===============================
-          if [ "$HOUR" = "00" ] && [ "$MINUTE" = "00" ]; then
+          if [ "$HOUR" = "00" ] && [ "$MINUTE" -le 10 ]; then
             if [ -n "$DISCORD_WEBHOOK_URL" ]; then
               curl -s -X POST "$DISCORD_WEBHOOK_URL" \
                 -H "Content-Type: application/json" \
@@ -95,22 +95,22 @@ jobs:
           fi
 
           # ===============================
-          # 1️⃣ 新聞雷達（每小時 / 手動）
+          # 1️⃣ 新聞雷達（每小時 ±10 分鐘 / 手動）
           # ===============================
-          if [ "$MINUTE" = "00" ] || [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then
+          if [ "$MINUTE" -le 10 ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python scripts/news_radar.py
           fi
 
           # ===============================
-          # 2️⃣ AI 分析（不改行為）
+          # 2️⃣ AI 分析（加入時間容忍區間）
           # ===============================
-          if [ \"${{ github.event_name }}\" = \"workflow_dispatch\" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python scripts/ai_tw_post.py
             python scripts/ai_us_post.py
           else
-            if [ "$HOUR" = "07" ] && [ "$MINUTE" = "30" ]; then
+            if [ "$HOUR" = "07" ] && [ "$MINUTE" -ge 30 ] && [ "$MINUTE" -le 45 ]; then
               python scripts/ai_tw_post.py
-            elif [ "$HOUR" = "22" ] && [ "$MINUTE" = "00" ]; then
+            elif [ "$HOUR" = "22" ] && [ "$MINUTE" -le 10 ]; then
               python scripts/ai_us_post.py
             fi
           fi
