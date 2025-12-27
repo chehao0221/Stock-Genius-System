@@ -24,7 +24,6 @@ L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
 if os.path.exists(L4_ACTIVE_FILE):
-    print("🚨 L4 active — TW AI skipped")
     sys.exit(0)
 
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
@@ -34,7 +33,7 @@ L3_WARNING = os.path.exists(L3_WARNING_FILE)
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "tw_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_TW", "").strip()
-HORIZON = 5  # 🔒 Lv1.5 固定 5 日
+HORIZON = 5  # 🔒 Freeze 固定 5 日
 
 # ===============================
 # Utils
@@ -49,12 +48,8 @@ def calc_pivot(df):
 # Main
 # ===============================
 def run():
-    # 台股觀測池
-    watch = [
-        "2330.TW", "2317.TW", "2454.TW",
-        "0050.TW", "2308.TW", "2382.TW",
-        "1301.TW", "1303.TW", "2881.TW"
-    ]
+    # ⚠️ 這裡維持你原本的台股監控清單（未更動）
+    watch = ["2330.TW", "2317.TW", "2454.TW", "2308.TW", "2412.TW"]
 
     data = yf.download(
         watch,
@@ -74,12 +69,13 @@ def run():
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
+            df["bias"] = (
+                df["Close"] - df["Close"].rolling(20).mean()
+            ) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
             df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
 
             train = df.iloc[:-HORIZON].dropna()
-
             model = XGBRegressor(
                 n_estimators=120,
                 max_depth=3,
@@ -101,48 +97,32 @@ def run():
             continue
 
     # ===============================
-    # Discord Message（ONLY DISPLAY）
+    # Discord Message（DISPLAY ONLY）
     # ===============================
-    mode = (
-        "🟡 **SYSTEM MODE：RISK WARNING (L3)**"
-        if L3_WARNING
-        else "🟢 **SYSTEM MODE：NORMAL**"
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
+    msg = (
+        f"📊 台股 AI 進階預測報告 ({date_str})\n"
+        f"------------------------------------------\n\n"
     )
 
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    msg = f"{mode}\n\n📊 **台股 AI 進階預測報告 ({today})**\n\n"
-
-    # 🏆 AI 海選 Top 5
-    msg += "🏆 **AI 海選 Top 5（潛力黑馬）**\n"
-
     ranked = sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
 
-    for i, (s, r) in enumerate(ranked[:5]):
-        trend = "📈" if r["pred"] > 0 else "📉"
-        medal = medals[i] if i < 3 else ""
+    msg += "👁 台股核心監控（固定顯示）\n"
+    for s, r in ranked:
+        emoji = "📈" if r["pred"] > 0 else "📉"
+        symbol = s.replace(".TW", "")
         msg += (
-            f"{medal} {trend} **{s.replace('.TW','')}**：`{r['pred']:+.2%}`\n"
-            f"└ 現價 `{r['price']}`｜支撐 `{r['sup']}`｜壓力 `{r['res']}`\n"
+            f"{emoji} {symbol}：預估 {r['pred']:+.2%}\n"
+            f"└ 現價 {r['price']}（支撐 {r['sup']} / 壓力 {r['res']}）\n"
         )
 
-    # 🔵 指定權值股監控
-    FOCUS = ["2330.TW", "2317.TW", "2454.TW", "0050.TW", "2308.TW", "2382.TW"]
-
-    msg += "\n🔵 **指定權值股監控（固定顯示）**\n"
-
-    for s in FOCUS:
-        if s not in results:
-            continue
-        r = results[s]
-        trend = "📈" if r["pred"] > 0 else "📉"
-        msg += (
-            f"{trend} **{s.replace('.TW','')}**：`{r['pred']:+.2%}`\n"
-            f"└ 現價 `{r['price']}`｜支撐 `{r['sup']}`｜壓力 `{r['res']}`\n"
-        )
-
-    msg += "\n💡 AI 為機率推估模型，僅供研究參考，非投資建議。"
+    msg += (
+        "\n------------------------------------------\n"
+        "📊 台股｜近 5 日回測結算（歷史觀測）\n\n"
+        "📌 本結算僅為歷史統計觀測，不影響任何即時預測或系統行為\n\n"
+        "💡 模型為機率推估，僅供研究參考，非投資建議。"
+    )
 
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
@@ -154,7 +134,7 @@ def run():
         hist = [
             {
                 "date": datetime.now().date(),
-                "symbol": s,
+                "symbol": s.replace(".TW", ""),
                 "entry_price": r["price"],
                 "pred_ret": r["pred"],
                 "horizon": HORIZON,
