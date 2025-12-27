@@ -7,7 +7,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-POOL_FILE = os.path.join(DATA_DIR, "tw_explorer_pool.json")
+POOL_FILE = os.path.join(DATA_DIR, "explorer_pool_tw.json")
 
 # ⚠️ 台股示範池（之後可換上市櫃完整清單）
 TW_UNIVERSE = [
