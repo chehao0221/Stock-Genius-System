@@ -12,7 +12,12 @@ on:
     # 🇺🇸 美股 AI（平日 06:00 TST = 22:00 UTC）
     - cron: '00 22 * * 1-5'
 
+    # 🔍 Explorer 股池週更（Top 500 成交量）
+    # 台灣時間 週一 02:00（UTC 18:00 Sun）
+    - cron: '0 18 * * 0'
+
   workflow_dispatch:
+
 
 jobs:
   quant_tasks:
