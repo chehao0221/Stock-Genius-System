@@ -34,7 +34,7 @@ L3_WARNING = os.path.exists(L3_WARNING_FILE)
 # ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_US", "").strip()
-HORIZON = 5  # 🔒 固定 5 日
+HORIZON = 5  # 🔒 Lv1.5 固定 5 日
 
 # ===============================
 # Utils
@@ -69,13 +69,12 @@ def run():
                 continue
 
             df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (
-                df["Close"] - df["Close"].rolling(20).mean()
-            ) / df["Close"].rolling(20).mean()
+            df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
             df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
             df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
 
             train = df.iloc[:-HORIZON].dropna()
+
             model = XGBRegressor(
                 n_estimators=120,
                 max_depth=3,
@@ -97,7 +96,7 @@ def run():
             continue
 
     # ===============================
-    # Discord Message (ONLY CHANGE)
+    # Discord Message (ONLY DISPLAY)
     # ===============================
     mode = (
         "🟡 **SYSTEM MODE：RISK WARNING (L3)**"
@@ -105,20 +104,36 @@ def run():
         else "🟢 **SYSTEM MODE：NORMAL**"
     )
 
-    msg = (
-        f"{mode}\n\n"
-        f"📊 **美股 AI 預測報告 ({datetime.now():%Y-%m-%d})**\n\n"
-    )
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    medals = ["🥇", "🥈", "🥉"]
+    msg = f"{mode}\n\n📊 **美股 AI 預測報告 ({today})**\n\n"
+
+    # 🏆 AI 海選 Top 5
+    msg += "🏆 **AI 海選 Top 5（潛力黑馬）**\n"
+
     ranked = sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True)
+    medals = ["🥇", "🥈", "🥉"]
 
-    for i, (s, r) in enumerate(ranked):
+    for i, (s, r) in enumerate(ranked[:5]):
         trend = "📈" if r["pred"] > 0 else "📉"
         medal = medals[i] if i < 3 else ""
         msg += (
-            f"{medal} {trend} **{s}**：{r['pred']:+.2%}\n"
-            f"└ 現價 {r['price']}｜支撐 {r['sup']}｜壓力 {r['res']}\n"
+            f"{medal} {trend} **{s}**：`{r['pred']:+.2%}`\n"
+            f"└ 現價 `{r['price']}`｜支撐 `{r['sup']}`｜壓力 `{r['res']}`\n"
+        )
+
+    # 🔵 指定權值股
+    FOCUS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"]
+    msg += "\n🔵 **指定權值股監控（固定顯示）**\n"
+
+    for s in FOCUS:
+        if s not in results:
+            continue
+        r = results[s]
+        trend = "📈" if r["pred"] > 0 else "📉"
+        msg += (
+            f"{trend} **{s}**：`{r['pred']:+.2%}`\n"
+            f"└ 現價 `{r['price']}`｜支撐 `{r['sup']}`｜壓力 `{r['res']}`\n"
         )
 
     msg += "\n💡 模型為機率推估，僅供研究參考，非投資建議。"
