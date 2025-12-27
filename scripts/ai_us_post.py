@@ -4,61 +4,47 @@ import json
 import warnings
 import requests
 import pandas as pd
-from xgboost import XGBRegressor
 from datetime import datetime
+from xgboost import XGBRegressor
 
-from safe_yfinance import safe_download
-
-# ===============================
-# Base / Data
-# ===============================
+# ===== Path Fix =====
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True)
-sys.path.append(BASE_DIR)
+sys.path.insert(0, BASE_DIR)
+
+from scripts.safe_yfinance import safe_download
 
 warnings.filterwarnings("ignore")
 
-# ===============================
-# Flags
-# ===============================
+DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
 L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
-L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
-EXPLORER_POOL_FILE = os.path.join(DATA_DIR, "us_explorer_pool.json")
+EXPLORER_POOL_FILE = os.path.join(DATA_DIR, "explorer_pool_us.json")
+HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
+
+WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_US", "").strip()
+HORIZON = 5
 
 if os.path.exists(L4_ACTIVE_FILE):
     sys.exit(0)
 
-L3_WARNING = os.path.exists(L3_WARNING_FILE)
-
-# ===============================
-# Settings
-# ===============================
-HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
-WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_US", "").strip()
-HORIZON = 5  # 🔒 Freeze
-
-# ===============================
-# Utils
 # ===============================
 def calc_pivot(df):
     r = df.iloc[-20:]
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
-    return round(2 * p - h, 2), round(2 * p - l, 2)
+    return round(2*p - h, 2), round(2*p - l, 2)
 
-# ===============================
-# Main
 # ===============================
 def run():
-    core_watch = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
-
+    core_watch = ["AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA"]
     data = safe_download(core_watch)
+
     if data is None:
-        print("[INFO] Skip US AI run due to Yahoo Finance failure")
+        print("[INFO] US AI skipped (data failure)")
         return
 
-    feats = ["mom20", "bias", "vol_ratio"]
+    feats = ["mom20","bias","vol_ratio"]
     results = {}
 
     for s in core_watch:
@@ -73,12 +59,7 @@ def run():
             df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
 
             train = df.iloc[:-HORIZON].dropna()
-            model = XGBRegressor(
-                n_estimators=120,
-                max_depth=3,
-                learning_rate=0.05,
-                random_state=42,
-            )
+            model = XGBRegressor(n_estimators=120, max_depth=3, learning_rate=0.05, random_state=42)
             model.fit(train[feats], train["target"])
 
             pred = float(model.predict(df[feats].iloc[-1:])[0])
@@ -96,24 +77,36 @@ def run():
     if not results:
         return
 
+    # ===============================
+    # Discord Message
+    # ===============================
     date_str = datetime.now().strftime("%Y-%m-%d")
-    msg = f"📊 美股 AI 進階預測報告 ({date_str})\n------------------------------------------\n\n"
+    msg = (
+        f"📊 美股 AI 進階預測報告 ({date_str})\n"
+        f"------------------------------------------\n\n"
+    )
 
     # 🔍 Explorer
     if os.path.exists(EXPLORER_POOL_FILE):
         try:
-            with open(EXPLORER_POOL_FILE, "r", encoding="utf-8") as f:
-                pool = json.load(f)
-
+            pool = json.load(open(EXPLORER_POOL_FILE, "r", encoding="utf-8"))
             explorer_syms = pool.get("symbols", [])[:100]
-            explorer_hits = [(s, results[s]) for s in explorer_syms if s in results]
-            explorer_top = sorted(explorer_hits, key=lambda x: x[1]["pred"], reverse=True)[:5]
 
-            if explorer_top:
-                msg += "🔍 AI 海選 Top 5（Explorer / 潛力股）\n"
-                for s, r in explorer_top:
+            hits = []
+            for s in explorer_syms:
+                if s not in results:
+                    continue
+                hits.append((s, results[s]))
+
+            top5 = sorted(hits, key=lambda x: x[1]["pred"], reverse=True)[:5]
+            if top5:
+                msg += "🔍 AI 海選 Top 5（潛力股）\n"
+                for s, r in top5:
                     emoji = "📈" if r["pred"] > 0 else "📉"
-                    msg += f"{emoji} {s}：預估 {r['pred']:+.2%}\n└ 現價 {r['price']}（支撐 {r['sup']} / 壓力 {r['res']}）\n"
+                    msg += (
+                        f"{emoji} {s}：預估 {r['pred']:+.2%}\n"
+                        f"└ 現價 {r['price']}（支撐 {r['sup']} / 壓力 {r['res']}）\n"
+                    )
                 msg += "\n"
         except Exception:
             pass
@@ -122,7 +115,27 @@ def run():
     msg += "👁 Magnificent 7 監控（固定顯示）\n"
     for s, r in sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True):
         emoji = "📈" if r["pred"] > 0 else "📉"
-        msg += f"{emoji} {s}：預估 {r['pred']:+.2%}\n└ 現價 {r['price']}（支撐 {r['sup']} / 壓力 {r['res']}）\n"
+        msg += (
+            f"{emoji} {s}：預估 {r['pred']:+.2%}\n"
+            f"└ 現價 {r['price']}（支撐 {r['sup']} / 壓力 {r['res']}）\n"
+        )
+
+    # 📊 Backtest
+    if os.path.exists(HISTORY_FILE):
+        try:
+            hist = pd.read_csv(HISTORY_FILE).tail(50)
+            win = hist[hist["pred_ret"] > 0]
+            msg += (
+                "\n------------------------------------------\n"
+                "📊 美股｜近 5 日回測結算（歷史觀測）\n\n"
+                f"交易筆數：{len(hist)}\n"
+                f"命中率：{len(win)/len(hist)*100:.1f}%\n"
+                f"平均報酬：{hist['pred_ret'].mean():+.2%}\n"
+                f"最大回撤：{hist['pred_ret'].min():+.2%}\n\n"
+                "📌 本結算僅為歷史統計觀測，不影響任何即時預測或系統行為\n"
+            )
+        except Exception:
+            pass
 
     msg += "\n💡 模型為機率推估，僅供研究參考，非投資建議。"
 
