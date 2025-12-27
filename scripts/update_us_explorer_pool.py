@@ -7,7 +7,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-POOL_FILE = os.path.join(DATA_DIR, "us_explorer_pool.json")
+POOL_FILE = os.path.join(DATA_DIR, "explorer_pool_us.json")
 
 # ⚠️ 來源池（示範版）
 # 真正實務你之後可換成 Russell 3000 / NASDAQ All
