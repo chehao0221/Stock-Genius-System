@@ -6,7 +6,7 @@ designed for market observation, risk monitoring, and model performance analysis
 This project does NOT execute trades, manage capital, or provide actionable
 investment instructions. All outputs are observational in nature and intended
 to support research, learning, and system design experimentation.
-
+---
 
 
 # 📊 Stock-Genius-System
