@@ -7,9 +7,6 @@ import pandas as pd
 from xgboost import XGBRegressor
 from datetime import datetime
 
-# ===============================
-# Base / Data
-# ===============================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -17,37 +14,24 @@ sys.path.append(BASE_DIR)
 
 warnings.filterwarnings("ignore")
 
-# ===============================
-# Flags
-# ===============================
 L4_ACTIVE_FILE = os.path.join(DATA_DIR, "l4_active.flag")
 L3_WARNING_FILE = os.path.join(DATA_DIR, "l3_warning.flag")
 
 if os.path.exists(L4_ACTIVE_FILE):
-    print("🚨 L4 active — US AI skipped")
     sys.exit(0)
 
 L3_WARNING = os.path.exists(L3_WARNING_FILE)
 
-# ===============================
-# Settings
-# ===============================
 HISTORY_FILE = os.path.join(DATA_DIR, "us_history.csv")
 WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_US", "").strip()
-HORIZON = 5  # 🔒 Lv1.5 固定 5 日
+HORIZON = 5  # 🔒 Freeze
 
-# ===============================
-# Utils
-# ===============================
 def calc_pivot(df):
     r = df.iloc[-20:]
     h, l, c = r["High"].max(), r["Low"].min(), r["Close"].iloc[-1]
     p = (h + l + c) / 3
     return round(2 * p - h, 2), round(2 * p - l, 2)
 
-# ===============================
-# Main
-# ===============================
 def run():
     watch = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
 
@@ -74,7 +58,6 @@ def run():
             df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
 
             train = df.iloc[:-HORIZON].dropna()
-
             model = XGBRegressor(
                 n_estimators=120,
                 max_depth=3,
@@ -96,54 +79,35 @@ def run():
             continue
 
     # ===============================
-    # Discord Message (ONLY DISPLAY)
+    # Discord Message (DISPLAY ONLY)
     # ===============================
-    mode = (
-        "🟡 **SYSTEM MODE：RISK WARNING (L3)**"
-        if L3_WARNING
-        else "🟢 **SYSTEM MODE：NORMAL**"
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
+    msg = (
+        f"📊 美股 AI 進階預測報告 ({date_str})\n"
+        f"------------------------------------------\n\n"
     )
 
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    msg = f"{mode}\n\n📊 **美股 AI 預測報告 ({today})**\n\n"
-
-    # 🏆 AI 海選 Top 5
-    msg += "🏆 **AI 海選 Top 5（潛力黑馬）**\n"
-
     ranked = sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
 
-    for i, (s, r) in enumerate(ranked[:5]):
-        trend = "📈" if r["pred"] > 0 else "📉"
-        medal = medals[i] if i < 3 else ""
+    msg += "👁 Magnificent 7 監控（固定顯示）\n"
+    for s, r in ranked:
+        emoji = "📈" if r["pred"] > 0 else "📉"
         msg += (
-            f"{medal} {trend} **{s}**：`{r['pred']:+.2%}`\n"
-            f"└ 現價 `{r['price']}`｜支撐 `{r['sup']}`｜壓力 `{r['res']}`\n"
+            f"{emoji} {s}：預估 {r['pred']:+.2%}\n"
+            f"└ 現價 {r['price']}（支撐 {r['sup']} / 壓力 {r['res']}）\n"
         )
 
-    # 🔵 指定權值股
-    FOCUS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"]
-    msg += "\n🔵 **指定權值股監控（固定顯示）**\n"
-
-    for s in FOCUS:
-        if s not in results:
-            continue
-        r = results[s]
-        trend = "📈" if r["pred"] > 0 else "📉"
-        msg += (
-            f"{trend} **{s}**：`{r['pred']:+.2%}`\n"
-            f"└ 現價 `{r['price']}`｜支撐 `{r['sup']}`｜壓力 `{r['res']}`\n"
-        )
-
-    msg += "\n💡 模型為機率推估，僅供研究參考，非投資建議。"
+    msg += (
+        "\n------------------------------------------\n"
+        "📊 美股｜近 5 日回測結算（歷史觀測）\n\n"
+        "📌 本結算僅為歷史統計觀測，不影響任何即時預測或系統行為\n\n"
+        "💡 模型為機率推估，僅供研究參考，非投資建議。"
+    )
 
     if WEBHOOK_URL:
         requests.post(WEBHOOK_URL, json={"content": msg[:1900]}, timeout=15)
 
-    # ===============================
-    # Save History（僅 NORMAL）
-    # ===============================
     if not L3_WARNING:
         hist = [
             {
