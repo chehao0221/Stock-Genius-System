@@ -46,6 +46,36 @@ def calc_pivot(df):
     p = (h + l + c) / 3
     return round(2 * p - h, 2), round(2 * p - l, 2)
 
+def run_model(df):
+    feats = ["mom20", "bias", "vol_ratio"]
+
+    df["mom20"] = df["Close"].pct_change(20)
+    df["bias"] = (df["Close"] - df["Close"].rolling(20).mean()) / df["Close"].rolling(20).mean()
+    df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
+    df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
+
+    train = df.iloc[:-HORIZON].dropna()
+    if len(train) < 60:
+        return None
+
+    model = XGBRegressor(
+        n_estimators=120,
+        max_depth=3,
+        learning_rate=0.05,
+        random_state=42,
+    )
+    model.fit(train[feats], train["target"])
+
+    pred = float(model.predict(df[feats].iloc[-1:])[0])
+    sup, res = calc_pivot(df)
+
+    return {
+        "pred": pred,
+        "price": round(df["Close"].iloc[-1], 2),
+        "sup": sup,
+        "res": res,
+    }
+
 # ===============================
 # Main
 # ===============================
@@ -59,49 +89,29 @@ def run():
         "2412.TW",  # 中華電
     ]
 
-    data = safe_download(core_watch)
-    if data is None:
+    # -------------------------------
+    # Lv1 / Lv1.5：核心監控
+    # -------------------------------
+    core_data = safe_download(core_watch)
+    if core_data is None:
         print("[INFO] Skip TW AI run due to Yahoo Finance failure")
         return
 
-    feats = ["mom20", "bias", "vol_ratio"]
-    results = {}
+    core_results = {}
 
     for s in core_watch:
         try:
-            df = data[s].dropna()
+            df = core_data[s].dropna()
             if len(df) < 120:
                 continue
 
-            df["mom20"] = df["Close"].pct_change(20)
-            df["bias"] = (
-                df["Close"] - df["Close"].rolling(20).mean()
-            ) / df["Close"].rolling(20).mean()
-            df["vol_ratio"] = df["Volume"] / df["Volume"].rolling(20).mean()
-            df["target"] = df["Close"].shift(-HORIZON) / df["Close"] - 1
-
-            train = df.iloc[:-HORIZON].dropna()
-            model = XGBRegressor(
-                n_estimators=120,
-                max_depth=3,
-                learning_rate=0.05,
-                random_state=42,
-            )
-            model.fit(train[feats], train["target"])
-
-            pred = float(model.predict(df[feats].iloc[-1:])[0])
-            sup, res = calc_pivot(df)
-
-            results[s] = {
-                "pred": pred,
-                "price": round(df["Close"].iloc[-1], 2),
-                "sup": sup,
-                "res": res,
-            }
+            r = run_model(df)
+            if r:
+                core_results[s] = r
         except Exception:
             continue
 
-    if not results:
+    if not core_results:
         return
 
     # ===============================
@@ -113,21 +123,40 @@ def run():
         f"------------------------------------------\n\n"
     )
 
-    # 🔍 Explorer（Lv2：潛力股，只顯示、不寫檔）
+    # -------------------------------
+    # 🔍 Explorer（Lv2：潛力股）
+    # -------------------------------
     if os.path.exists(EXPLORER_POOL_FILE):
         try:
             with open(EXPLORER_POOL_FILE, "r", encoding="utf-8") as f:
                 pool = json.load(f)
 
             explorer_syms = pool.get("symbols", [])[:100]
-            explorer_hits = [(s, results[s]) for s in explorer_syms if s in results]
-            explorer_top = sorted(
-                explorer_hits, key=lambda x: x[1]["pred"], reverse=True
+            explorer_data = safe_download(explorer_syms)
+
+            explorer_results = {}
+            if explorer_data is not None:
+                for s in explorer_syms:
+                    try:
+                        df = explorer_data[s].dropna()
+                        if len(df) < 120:
+                            continue
+
+                        r = run_model(df)
+                        if r:
+                            explorer_results[s] = r
+                    except Exception:
+                        continue
+
+            top5 = sorted(
+                explorer_results.items(),
+                key=lambda x: x[1]["pred"],
+                reverse=True,
             )[:5]
 
-            if explorer_top:
+            if top5:
                 msg += "🔍 AI 海選 Top 5（Explorer / 潛力股）\n"
-                for s, r in explorer_top:
+                for s, r in top5:
                     emoji = "📈" if r["pred"] > 0 else "📉"
                     symbol = s.replace(".TW", "")
                     msg += (
@@ -138,9 +167,11 @@ def run():
         except Exception:
             pass
 
+    # -------------------------------
     # 👁 核心監控（固定顯示）
+    # -------------------------------
     msg += "👁 台股核心監控（固定顯示）\n"
-    for s, r in sorted(results.items(), key=lambda x: x[1]["pred"], reverse=True):
+    for s, r in sorted(core_results.items(), key=lambda x: x[1]["pred"], reverse=True):
         emoji = "📈" if r["pred"] > 0 else "📉"
         symbol = s.replace(".TW", "")
         msg += (
@@ -167,7 +198,7 @@ def run():
                     "horizon": HORIZON,
                     "settled": False,
                 }
-                for s, r in results.items()
+                for s, r in core_results.items()
             ]
         ).to_csv(
             HISTORY_FILE,
