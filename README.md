@@ -1,3 +1,8 @@
+> Research-only quantitative market intelligence system.  
+> No trading. No investment advice. Observation & risk monitoring only.
+
+---
+
 # 🧠 Stock-Genius-System
 Quant Intelligence Market Monitor (v1.0-stable)
 
