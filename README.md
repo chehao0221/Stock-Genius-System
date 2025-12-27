@@ -132,6 +132,7 @@ Stock-Genius-System/
 │        # - 新聞雷達
 │        # - 台股 / 美股 AI 預測
 │        # - 風險狀態監控（L3 / L4）
+│        # - Explorer 股池更新（只讀）
 │
 ├─ data/
 │  ├─ tw_history.csv
@@ -139,6 +140,18 @@ Stock-Genius-System/
 │  │
 │  ├─ us_history.csv
 │  │   # 🇺🇸 美股 AI 預測歷史紀錄（僅觀測，不影響行為）
+│  │
+│  ├─ explorer_pool_tw.json        🆕
+│  │   # 🇹🇼 台股 Explorer 股池
+│  │   # - 來源：成交量前 500
+│  │   # - 定期更新
+│  │   # - 僅供 Lv2 探索使用（只讀）
+│  │
+│  ├─ explorer_pool_us.json        🆕
+│  │   # 🇺🇸 美股 Explorer 股池
+│  │   # - 來源：成交量前 500
+│  │   # - 定期更新
+│  │   # - 僅供 Lv2 探索使用（只讀）
 │  │
 │  ├─ horizon_policy.json
 │  │   # 🔁 預測 Horizon 設定（Freeze，固定 5 日）
@@ -167,51 +180,70 @@ Stock-Genius-System/
 ├─ scripts/
 │  ├─ ai_tw_post.py
 │  │   # 🇹🇼 台股 AI 分析與 Discord 推播
-│  │   # - 核心監控股票
+│  │   # - Lv1 核心監控股票
 │  │   # - 固定 Horizon（5 日）
-│  │   # - 僅輸出預測，不改變系統行為
+│  │   # - 只輸出預測，不影響系統行為
 │  │
 │  ├─ ai_us_post.py
 │  │   # 🇺🇸 美股 AI 分析與 Discord 推播
-│  │   # - Magnificent 7 核心監控
+│  │   # - Lv1 Magnificent 7 核心監控
 │  │   # - 固定 Horizon（5 日）
-│  │   # - 僅輸出預測，不改變系統行為
+│  │   # - 只輸出預測，不影響系統行為
 │  │
-│  ├─ safe_yfinance.py
+│  ├─ ai_tw_explorer_post.py       🆕
+│  │   # 🇹🇼 台股 Explorer（Lv2）
+│  │   # - 使用 explorer_pool_tw.json
+│  │   # - 同一模型 / 同一 Horizon
+│  │   # - 僅排序，不寫歷史、不影響風控
+│  │   # - 只顯示 Top 5
+│  │
+│  ├─ ai_us_explorer_post.py       🆕
+│  │   # 🇺🇸 美股 Explorer（Lv2）
+│  │   # - 使用 explorer_pool_us.json
+│  │   # - 同一模型 / 同一 Horizon
+│  │   # - 僅排序，不寫歷史、不影響風控
+│  │   # - 只顯示 Top 5
+│  │
+│  ├─ update_tw_explorer_pool.py   🆕
+│  │   # 🇹🇼 台股 Explorer 股池更新器
+│  │   # - 抓取市場成交量
+│  │   # - 篩選成交量前 500
+│  │   # - 寫入 explorer_pool_tw.json
+│  │
+│  ├─ update_us_explorer_pool.py   🆕
+│  │   # 🇺🇸 美股 Explorer 股池更新器
+│  │   # - 抓取市場成交量
+│  │   # - 篩選成交量前 500
+│  │   # - 寫入 explorer_pool_us.json
+│  │
+│  ├─ safe_yfinance.py             🆕（本次你已新增）
 │  │   # 🛡 Yahoo Finance 安全封裝
 │  │   # - 資料源異常時自動降級
 │  │   # - 避免 GitHub Actions 因資料源失效而中斷
 │  │
 │  ├─ news_radar.py
 │  │   # 📰 新聞雷達 / 黑天鵝偵測
-│  │   # - 重大事件關鍵字掃描
-│  │   # - 黑天鵝紀錄與狀態更新
 │  │
 │  ├─ performance_dashboard.py
-│  │   # 📊 績效統計模組
-│  │   # - 命中率
-│  │   # - 平均報酬
-│  │   # - 最大回撤
-│  │   # - Equity Curve 產生
+│  │   # 📊 績效統計模組（只觀測）
 │  │
 │  ├─ performance_discord_report.py
-│  │   # 📣 Discord 績效推播（僅觀測）
-│  │   # - 不影響任何 AI 或風控決策
+│  │   # 📣 Discord 績效推播（只觀測）
 │  │
 │  ├─ horizon_optimizer.py
-│  │   # 🔁 Horizon 初始化與策略控制（Freeze）
+│  │   # 🔁 Horizon 初始化（Freeze）
 │  │
 │  ├─ hit_rate_trend_guard.py
-│  │   # 🎯 命中率趨勢監控（L3 觸發條件）
+│  │   # 🎯 命中率趨勢監控（L3）
 │  │
 │  ├─ horizon_guardian.py
-│  │   # 🛡 Horizon 狀態守門（避免誤變更）
+│  │   # 🛡 Horizon 狀態守門
 │  │
 │  ├─ horizon_change_notifier.py
-│  │   # 🔔 Horizon 狀態變更通知（僅提示）
+│  │   # 🔔 Horizon 狀態變更通知
 │  │
 │  ├─ l4_defense_mode.py
-│  │   # 🔴 L4 黑天鵝防禦核心邏輯
+│  │   # 🔴 L4 黑天鵝防禦核心
 │  │
 │  ├─ l4_dynamic_pause.py
 │  │   # ⏸ 動態停機判斷
@@ -223,19 +255,25 @@ Stock-Genius-System/
 │  │   # 📉 L4 前後 AI 表現比較
 │  │
 │  ├─ l4_ai_performance_report.py
-│  │   # 📄 L4 分析報告（觀測用）
+│  │   # 📄 L4 分析報告（觀測）
 │  │
 │  └─ l4_postmortem_report.py
-│      # 🧾 黑天鵝事件事後檢討報告
+│      # 🧾 黑天鵝事件事後檢討
 │
 ├─ requirements.txt
 │  # 🐍 Python 套件依賴清單
 │
 ├─ README.md
-│  # 📘 專案說明文件（系統定位 / Freeze 狀態 / 架構）
+│  # 📘 專案說明文件
+│  # - 系統定位（研究 / 觀測）
+│  # - Horizon Freeze
+│  # - Lv1 / Lv2 架構說明
 │
 └─ LICENSE
-   # 📄 授權文件（尚未設定，可選）
+   # 📄 授權文件
+   # - Research / Educational Use Only
+   # - No Investment Advice
+
 
 ```
 ---
